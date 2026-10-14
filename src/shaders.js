@@ -101,7 +101,7 @@ vec4 cloudMapS(vec2 xz){ return mix(bspl(uCloudMapP,(xz/16.0-uCloudOP)/128.0),bs
 vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(xz/16.0-uCloudOP)/128.0+du,l),textureLod(uCloudMap,cloudUV(xz)+du,l),uCloudF); }
 float cloudShade(vec3 p){
   if(uCloudOn<0.5) return 1.0;
-  vec3 q=p+uSunDir/max(uSunDir.y,0.15)*(175.0-p.y);
+  vec3 q=p+uSunDir/max(uSunDir.y,0.15)*(200.0-p.y);
   float c=cloudMap(q.xz).r;
   return 1.0-0.72*smoothstep(0.15,0.75,c);
 }
@@ -777,9 +777,17 @@ uniform sampler2D uSceneDepth; uniform highp sampler3D uNoise3; uniform mat4 uIn
 uniform vec3 uAmbSky; uniform vec2 uCloudWind; uniform vec2 uRes;
 uniform sampler2D uCloudMap2; uniform sampler2D uCloudMap2P; uniform vec2 uUpWind; uniform vec4 uFlash;
 uniform sampler2D uHist; uniform mat4 uPrevVP; uniform float uHistOn; uniform float uFrame;
-const float CB=150.0, CT=236.0, CI=330.0;
+// The cloud layer runs from 150 to 430 blocks: stratus decks stay low and thin, cumulus build
+// upward with the simulated tops, thunderheads reach the ceiling and spread an anvil.
+// Density model (written after the volumetric recipe in CK42BB/procedural-clouds-threejs, MIT):
+// a base shape of fbm and inverted Worley billows is thresholded by the coverage (here the
+// simulated cloud map), then eroded at the edges by finer noise; a height profile per cloud type
+// rounds the bases and domes the tops.
+const float CB=150.0, CT=430.0, CI=520.0;
+float remap(float v, float lo, float hi, float a, float b){ return a+(clamp(v,lo,hi)-lo)/max(hi-lo,1e-4)*(b-a); }
 // map: R cover, G how high the tops reach, B rain; map2: R cirrus, G convective share
 float dens(vec3 p, bool fine){
+  if(p.y<CB||p.y>CT) return 0.0;
   vec2 uv=cloudUV(p.xz);
   vec2 ee=smoothstep(vec2(0.0),vec2(0.12),uv)*smoothstep(vec2(1.0),vec2(0.88),uv);
   float edge=ee.x*ee.y;
@@ -789,43 +797,47 @@ float dens(vec3 p, bool fine){
   if(fine){ vec2 wq=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0021,0.43).xzy).rg-0.5; m=cloudMapS(p.xz+wq*26.0); }
   else m=cloudMap(p.xz);
   float ha=(p.y-CB)/(CT-CB);
-  // anvil: a thunderhead's top spreads into a wide flat sheet under the tropopause, blown downwind
+  // anvil: a thunderhead's top spreads into a wide flat sheet under the ceiling, blown downwind
   float anv=0.0;
-  if(ha>0.72){
+  if(ha>0.78){
     vec4 mb=cloudMapLod(p.xz,-uUpWind*0.02,2.6);
-    anv=smoothstep(0.66,0.85,mb.g)*smoothstep(0.35,0.7,mb.r)*smoothstep(0.74,0.84,ha)*(1.0-smoothstep(0.93,1.0,ha));
+    anv=smoothstep(0.66,0.85,mb.g)*smoothstep(0.35,0.7,mb.r)*smoothstep(0.8,0.88,ha)*(1.0-smoothstep(0.95,1.0,ha));
   }
   if(m.r<0.02 && anv<0.01) return 0.0;
   float cv=mix(texture(uCloudMap2P,(p.xz/16.0-uCloudOP)/128.0).g,texture(uCloudMap2,uv).g,uCloudF);
   // sparse cloud is fair-weather cumulus: small puffs, not slivers torn from a stratus sheet
   cv=max(cv,1.0-smoothstep(0.12,0.45,m.r));
   vec3 w=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
-  float d=0.0;
-  float top=CB+14.0+m.g*(CT-CB-14.0)*mix(0.45,1.0,cv);
+  // how tall the cloud here grows: a stratus deck is ~40 blocks, cumulus rise with the tops field
+  float top=CB+mix(40.0,30.0+m.g*m.g*(CT-CB-30.0),cv);
   float h=(p.y-CB)/(top-CB);
-  if(h>=0.0 && h<=1.0 && m.r>=0.02){
-    // stratus: a flat sheet with soft, smeared texture; cumulus: billows with flat grey bases
-    // and rounded tops; towers stay broad all the way up
-    float pst=smoothstep(0.0,0.18,h)*(1.0-smoothstep(0.55,1.0,h));
-    float pcu=smoothstep(0.0,0.07,h)*(1.0-smoothstep(mix(0.35,0.7,smoothstep(0.65,0.95,m.g)),1.0,h));
+  float d=0.0;
+  if(h<=1.0){
+    // height profiles: stratus a soft slab; cumulus a flat base, full in the middle, narrowing
+    // into a rounded dome (coverage shrinks with height, so the noise carves domes)
+    float pst=smoothstep(0.0,0.2,h)*(1.0-smoothstep(0.6,1.0,h));
+    float pcu=smoothstep(0.0,0.06,h)*(1.0-smoothstep(0.25,1.0,h)*0.85);
     float prof=mix(pst,pcu,cv);
-    vec2 n=texture(uNoise3,w*vec3(0.0055,0.009,0.0055)).rg;
-    float ns=texture(uNoise3,w*vec3(0.0028,0.02,0.0028)).r;
-    float shape=mix(ns*0.75+0.25,n.g*0.6+n.r*0.4,cv);
-    float cov=m.r*edge*prof;
-    // a steeper ramp from the noise threshold gives clouds defined edges instead of grey smudges
-    d=smoothstep(0.0,1.0,clamp((shape-(1.0-cov))/max(cov*0.6,0.06),0.0,1.0))*mix(0.6,1.0,cv);
+    float cov=clamp(m.r*edge,0.0,1.0)*prof;
+    // base shape: low-frequency fbm with Worley billows; stratus stretched flat, cumulus round
+    vec3 sp=w*mix(vec3(0.0026,0.012,0.0026),vec3(0.0042,0.0055,0.0042),cv);
+    vec2 n=texture(uNoise3,sp).rg;
+    float shape=mix(n.r*0.8+n.g*0.2,n.r*0.45+n.g*0.55,cv);
+    // coverage threshold: more cover lets more of the noise through; the result is scaled by
+    // cover so sparse cloud stays thin at the edges
+    d=remap(shape,1.0-cov,1.0,0.0,1.0)*cov;
+    if(fine && d>0.0){
+      // edge erosion with finer noise: wispy at the base, billowy higher up
+      vec2 dn=texture(uNoise3,w*0.024+vec3(0.0,uTime*0.008,0.0)).rg;
+      float dn2=texture(uNoise3,w*0.07+vec3(uTime*0.005,0.0,0.0)).g;
+      float det=mix(dn.r,dn.g,clamp(h*1.5,0.0,1.0)*cv)*0.65+dn2*0.35;
+      d=remap(d,(1.0-det)*mix(0.25,0.45,cv)*0.6,1.0,0.0,1.0);
+    }
+    d*=mix(0.7,1.0,cv);
   }
   if(anv>0.0){
     float na=texture(uNoise3,w*vec3(0.004,0.03,0.004)).r;
     d=max(d,clamp(anv*edge*(na*1.2-0.15),0.0,1.0)*0.7);
-  }
-  if(fine && d>0.0){
-    // erode the edges with two finer octaves: wispy for stratus, billowy for cumulus
-    vec2 dn=texture(uNoise3,w*0.03+vec3(0.0,uTime*0.01,0.0)).rg;
-    float dn2=texture(uNoise3,w*0.085+vec3(uTime*0.006,0.0,0.0)).r;
-    float er=mix(dn.r,dn.g,cv*0.6)*0.7+dn2*0.3;
-    d=max(d-(1.0-er)*mix(0.2,0.4,cv)*(1.0-d),0.0);
   }
   return d*(1.0+m.b*1.5);
 }
@@ -866,17 +878,21 @@ void main(){
     vec3 p=ro+rd*t;
     float d=dens(p,true);
     if(d>0.001){
-      // light reaching this point through the cloud above it
-      float ls=0.0;
-      for(int j=1;j<=4;j++){ float s=float(j*j)*3.5; ls+=dens(p+uSunDir*s,false)*(float(j)*7.0); }
-      float sigma=d*0.1;
-      float beer=exp(-ls*0.09), powder=1.0-exp(-d*3.0);
+      // light march toward the sun: six growing steps through the layer above this point
+      float ls=0.0, ds=6.0; vec3 lp=p;
+      for(int j=0;j<6;j++){ lp+=uSunDir*ds; ls+=dens(lp,false)*ds; ds*=1.6; }
+      float sigma=d*0.12;
+      // Beer-Lambert with a powder term (thin, sunlit edges glow; deep insides darken) plus a
+      // weaker, longer-reaching lobe standing in for light scattered many times
+      float beer=exp(-ls*0.11)+0.35*exp(-ls*0.025);
+      float powder=1.0-exp(-d*6.0);
+      float sun=beer*mix(1.0,powder,0.55)*2.0;
       float h=clamp((p.y-CB)/(CT-CB),0.0,1.0);
-      vec3 amb=mix(uAmbSky*0.55,uZenith*0.9+uAmbSky*0.4,h);
+      vec3 amb=mix(uAmbSky*0.5,uZenith*0.85+uAmbSky*0.45,smoothstep(0.0,0.6,h));
       // rain clouds are thick and dark underneath
       float rb=cloudMap(p.xz).b;
       amb*=mix(1.0,0.35+0.5*h,rb);
-      vec3 S=(sunL*beer*ph*mix(1.0,powder*1.8,0.5)*1.25+amb*mix(0.58,0.85,h))*sigma;
+      vec3 S=(sunL*sun*ph*1.5+amb*mix(0.5,0.8,h))*sigma;
       // lightning lights the cloud around the stroke from inside
       if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*14.0*exp(-length(p-uFlash.xyz)/80.0)*sigma;
       float tr=exp(-sigma*dt);
@@ -938,7 +954,7 @@ void main(){
   if(zd<1.0){
     vec4 g=uInvVP*vec4(vP,zd*2.0-1.0,1.0); vec3 w=g.xyz/g.w;
     float lo=min(uCam.y,w.y), hi=max(uCam.y,w.y);
-    if(hi<150.0||lo>236.0){ o=vec4(0.0,0.0,0.0,1.0); return; }
+    if(hi<150.0||lo>430.0){ o=vec4(0.0,0.0,0.0,1.0); return; }
   }
   o=texture(uClouds,uv);
 }`;
