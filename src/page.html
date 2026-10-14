@@ -1,0 +1,207 @@
+<title>Emberwood</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Overpass+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* Layout: a full-bleed canvas with a pinned field-notebook panel (menu) and a sparse HUD at the corners. Single dark look by choice. */
+:root {
+  --bark: #1a110b;
+  --panel: rgba(26, 17, 11, 0.78);
+  --panel-solid: #24180f;
+  --parch: #f2e4cf;
+  --ash: #b8a286;
+  --ember: #e8743b;
+  --ember-deep: #b8461c;
+  --line: rgba(242, 228, 207, 0.16);
+  --display: "Young Serif", "Iowan Old Style", Georgia, serif;
+  --mono: "Overpass Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+#ctxlost { position: fixed; inset: 0; display: grid; place-items: center; background: #120c08e6; color: #f3e3c8; font: 15px "Overpass Mono", monospace; z-index: 50; padding: 16px; text-align: center; }
+body { margin: 0; background: var(--bark); color: var(--parch); font-family: var(--mono); font-size: 13px; overflow: hidden; -webkit-user-select: none; user-select: none; }
+#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+
+#hud { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: 16px; display: grid; gap: 4px; pointer-events: none; }
+#hud .name { font-family: var(--display); font-size: 20px; letter-spacing: 0.01em; text-shadow: 0 1px 8px rgba(0,0,0,.5); }
+#hud-stats { white-space: pre; font-size: 11px; line-height: 1.5; color: var(--parch); opacity: .82; text-shadow: 0 1px 3px rgba(0,0,0,.7); font-variant-numeric: tabular-nums; }
+
+#cross { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; display: none; }
+#cross::before, #cross::after { content: ""; position: absolute; background: var(--parch); box-shadow: 0 0 2px rgba(0,0,0,.8); }
+#cross::before { left: 8px; top: 2px; width: 2px; height: 14px; }
+#cross::after { top: 8px; left: 2px; height: 2px; width: 14px; }
+body.playing #cross { display: block; }
+
+#hotbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 6px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.slot { position: relative; width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: rgba(0,0,0,.25); cursor: pointer; }
+.slot .sw { position: absolute; inset: 7px; border-radius: 3px; box-shadow: inset 0 -4px 0 rgba(0,0,0,.25), inset 0 2px 0 rgba(255,255,255,.12); }
+.slot .k { position: absolute; top: 1px; left: 3px; font-size: 9px; color: var(--ash); }
+.slot.sel { border-color: var(--ember); box-shadow: 0 0 0 1px var(--ember); }
+.slot:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
+#toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); font-family: var(--display); font-size: 16px; opacity: 0; transition: opacity .25s; pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,.8); }
+#toast.on { opacity: 1; }
+
+.head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
+#globe-btn { padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%; line-height: 0; }
+#globe-btn:focus-visible { outline: 2px solid var(--parch); outline-offset: 3px; }
+#globe { width: 88px; height: 88px; display: block; }
+#mapview { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(12,8,5,.82); z-index: 40; }
+.mapbox { display: grid; gap: 8px; width: min(1100px, 100%); }
+#map { width: 100%; height: auto; aspect-ratio: 2 / 1; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 3px; background: #0b1a2c; }
+.mapmodes { display: flex; flex-wrap: wrap; gap: 6px; }
+.mapmodes button { font: 600 11px var(--mono); color: var(--ash); background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; cursor: pointer; }
+.mapmodes button:hover { color: var(--parch); border-color: rgba(232,116,59,.6); }
+.mapmodes button[aria-pressed=true] { color: var(--parch); border-color: var(--ember); background: rgba(232,116,59,.14); }
+.mapmodes kbd { font-size: 10px; margin-right: 2px; }
+.overlays { align-items: center; }
+.ol-label { font: 600 10px var(--mono); color: var(--ash); text-transform: uppercase; letter-spacing: .08em; margin-right: 4px; }
+#mapinfo { font-family: var(--mono); color: var(--parch); }
+.maplegend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--ash); }
+#loading { position: fixed; right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); font-size: 11px; color: var(--ash); }
+
+#menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: flex-start; padding-inline: 16px; padding-block: 16px; background: linear-gradient(90deg, rgba(20,12,7,.72) 0%, rgba(20,12,7,.25) 55%, rgba(20,12,7,0) 100%); overflow-y: auto; }
+.sheet { width: min(430px, 100%); display: grid; gap: 18px; padding: 26px 24px 22px; margin-left: clamp(0px, 5vw, 64px); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.eyebrow { font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ember); }
+h1 { font-family: var(--display); font-weight: 400; font-size: clamp(38px, 7vw, 54px); line-height: 1; margin: 6px 0 0; letter-spacing: -0.01em; text-wrap: balance; }
+#menu-sub { margin: 10px 0 0; color: var(--ash); line-height: 1.55; max-width: 38ch; }
+#enter { justify-self: start; font: 600 14px var(--mono); color: #1a110b; background: var(--ember); border: 0; border-radius: 3px; padding: 12px 18px; cursor: pointer; letter-spacing: .02em; }
+#enter:hover { background: #f08a52; }
+#enter:focus-visible, .sheet button:focus-visible, .sheet input:focus-visible { outline: 2px solid var(--parch); outline-offset: 2px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; margin: 0; font-size: 12px; }
+.keys dt { color: var(--parch); white-space: nowrap; }
+.keys dd { margin: 0; color: var(--ash); }
+kbd { font: inherit; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; }
+details { border-top: 1px solid var(--line); padding-top: 14px; }
+summary { cursor: pointer; font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ash); }
+.controls { display: grid; gap: 12px; margin-top: 14px; }
+.row { display: grid; gap: 4px; }
+.row label { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.row output { color: var(--ash); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--ember); }
+.check { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+input[type=checkbox] { accent-color: var(--ember); }
+.seedrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.seedrow input { flex: 1 1 100px; min-width: 0; font: inherit; color: var(--parch); background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; }
+.seedrow button { font: inherit; color: var(--parch); background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; cursor: pointer; }
+.seedrow button:hover { border-color: var(--ember); }
+.fxgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; }
+select { font: inherit; color: var(--parch); background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; }
+.seasons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.seasons button { display: grid; justify-items: center; gap: 6px; font: 600 11px var(--mono); letter-spacing: .04em; color: var(--ash); background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 4px; padding: 9px 4px 8px; cursor: pointer; transition: border-color .15s, color .15s, background .15s; }
+.seasons button i { width: 26px; height: 26px; border-radius: 50%; background: conic-gradient(var(--a) 0 50%, var(--b) 50% 100%); box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); transform: rotate(-45deg); transition: transform .3s; }
+.seasons button:hover { border-color: rgba(232,116,59,.6); color: var(--parch); }
+.seasons button[aria-checked=true] { border-color: var(--ember); color: var(--parch); background: rgba(232,116,59,.12); }
+.seasons button[aria-checked=true] i { transform: rotate(135deg) scale(1.08); }
+.seasons button:focus-visible { outline: 2px solid var(--parch); outline-offset: 2px; }
+.foot { font-size: 11px; color: var(--ash); line-height: 1.5; }
+
+#touchui, #stick { display: none; }
+body.touch.playing #touchui { display: block; }
+body.touch #stick:not([hidden]) { display: block; }
+#stick { position: fixed; width: 112px; height: 112px; border-radius: 50%; border: 1px solid var(--line); background: rgba(0,0,0,.2); pointer-events: none; }
+#knob { position: absolute; left: 36px; top: 36px; width: 40px; height: 40px; border-radius: 50%; background: rgba(242,228,207,.35); }
+#touchui button { position: fixed; width: 58px; height: 58px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--parch); font: 600 11px var(--mono); }
+#t-jump { right: 20px; bottom: calc(90px + env(safe-area-inset-bottom, 0px)); }
+#t-break { right: 90px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
+#t-place { right: 20px; bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
+#t-fly { right: 90px; bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+#t-menu { right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); width: 44px !important; height: 44px !important; }
+body.touch.playing #loading { display: none; }
+@media (max-width: 520px) {
+  .sheet { padding: 20px 18px; margin-left: 0; }
+  #hud-stats { display: none; }
+  .slot { width: 30px; height: 30px; }
+  .slot .sw { inset: 5px; }
+}
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+
+<canvas id="gl" tabindex="-1"></canvas>
+<div id="hud"><div class="name">Emberwood</div><div id="hud-stats"></div></div>
+<div id="loading">Growing the forest…</div>
+<div id="cross"></div>
+<div id="toast"></div>
+<div id="hotbar"></div>
+<div id="stick" hidden><div id="knob"></div></div>
+<div id="touchui">
+  <button id="t-jump" type="button">Jump</button>
+  <button id="t-break" type="button">Break</button>
+  <button id="t-place" type="button">Place</button>
+  <button id="t-fly" type="button">Fly</button>
+  <button id="t-menu" type="button">II</button>
+</div>
+
+<div id="mapview" hidden>
+  <div class="mapbox">
+    <canvas id="map"></canvas>
+    <div class="mapmodes" id="mapmodes" role="toolbar" aria-label="Map view"></div>
+    <div class="mapmodes overlays" id="mapoverlays" role="toolbar" aria-label="Map overlays"><span class="ol-label">Overlays</span></div>
+    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span><kbd>1</kbd>–<kbd>6</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span></div>
+  </div>
+</div>
+<div id="menu">
+  <div class="sheet">
+    <div class="head">
+      <div>
+        <div class="eyebrow"><span id="month">Late October</span> · <span id="lat">47° N</span></div>
+        <h1>Emberwood</h1>
+      </div>
+      <button id="globe-btn" type="button" aria-label="Open the planet map"><canvas id="globe" width="176" height="176"></canvas></button>
+    </div>
+    <p id="menu-sub">A whole planet of drifting plates, rain-cut valleys and rivers, and you in its autumn forests. Maples gone scarlet, birches in gold, leaves drifting down through low afternoon light.</p>
+    <div class="seasons" role="radiogroup" aria-label="Season" id="seasons">
+      <button type="button" role="radio" data-s="0"><i style="--a:#f3c4cf;--b:#8cc04a"></i>Spring</button>
+      <button type="button" role="radio" data-s="1"><i style="--a:#3f7a2a;--b:#7aa83a"></i>Summer</button>
+      <button type="button" role="radio" data-s="2"><i style="--a:#c2361a;--b:#eaa628"></i>Autumn</button>
+      <button type="button" role="radio" data-s="3"><i style="--a:#eef2f6;--b:#7d8a99"></i>Winter</button>
+    </div>
+    <button id="enter" type="button">Walk into the forest</button>
+    <dl class="keys">
+      <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Walk, <kbd>Shift</kbd> to run</dd>
+      <dt><kbd>Space</kbd></dt><dd>Jump or swim up</dd>
+      <dt><kbd>F</kbd></dt><dd>Fly; <kbd>Space</kbd> rises, <kbd>C</kbd> sinks</dd>
+      <dt>Left / right click</dt><dd>Break / place a block</dd>
+      <dt><kbd>1</kbd>–<kbd>9</kbd>, wheel</dt><dd>Choose a block</dd>
+      <dt><kbd>G</kbd></dt><dd>Cycle shader looks</dd>
+      <dt><kbd>N</kbd></dt><dd>Next season</dd>
+      <dt><kbd>T</kbd></dt><dd>An hour later, <kbd>Shift</kbd> earlier</dd>
+      <dt><kbd>M</kbd></dt><dd>Planet map</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Back to this sheet</dd>
+    </dl>
+    <details>
+      <summary>Settings</summary>
+      <div class="controls">
+        <div class="row"><label for="rd">View distance <output id="rd-v"></output></label><input id="rd" type="range" min="3" max="16" step="1"></div>
+        <div class="row"><label for="leaves">Falling leaves <output id="leaves-v"></output></label><input id="leaves" type="range" min="0" max="60000" step="1000"></div>
+        <div class="row"><label for="tod">Time of day <output id="tod-v"></output></label><input id="tod" type="range" min="0" max="23.9" step="0.1"></div>
+        <div class="row"><label for="daylen">Day length <output id="daylen-v"></output></label><input id="daylen" type="range" min="0" max="60" step="5"></div>
+        <div class="row"><label for="wind">Wind strength <output id="wind-v"></output></label><input id="wind" type="range" min="0" max="3" step="0.1"></div>
+        <label class="check" for="shadows"><input id="shadows" type="checkbox"> Sun shadows</label>
+        <div class="row"><label for="seed">World seed</label>
+          <div class="seedrow"><input id="seed" type="text" inputmode="numeric"><button id="regen" type="button">Grow</button><button id="reseed" type="button">New forest</button></div>
+        </div>
+      </div>
+    </details>
+    <details>
+      <summary>Shaders</summary>
+      <div class="controls">
+        <div class="row"><label for="look">Look <output>G cycles</output></label><select id="look"></select></div>
+        <div class="row"><label for="exposure">Exposure <output id="exposure-v"></output></label><input id="exposure" type="range" min="0.4" max="2.5" step="0.05"></div>
+        <div class="fxgrid" id="fx-grid"></div>
+        <div class="seedrow"><button id="fx-all" type="button">All on</button><button id="fx-none" type="button">All off</button></div>
+      </div>
+    </details>
+    <div class="foot">Chunks of 32×32×124 blocks are grown and greedy-meshed on background workers. The frame is lit in HDR and runs through 9 post passes before it reaches you.</div>
+  </div>
+</div>
+
+<script type="text/plain" id="worker-src">
+/*WORKER*/
+</script>
+<script>
+/*SHADERS*/
+/*POST*/
+/*MAIN*/
+</script>
