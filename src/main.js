@@ -22,11 +22,7 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, ocean: true, mist: true, clouds: true, ca: true, fxaa: true, look: 0, exposure: 0.95,
-  // volumetric cloud render scale (of the screen); phones default to half
-  cloudRes: matchMedia('(pointer: coarse)').matches ? 0.5 : 0.75,
-  // cloud debug panel: bits of CLOUD_DBG that are switched off
-  cdbg: 0 };
+  caustics: true, ocean: true, mist: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
@@ -81,8 +77,6 @@ const progs = {
   sky: program(VS_SKY, FS_SKY),
   leaf: program(VS_LEAF, FS_LEAF),
   line: program(VS_LINE, FS_LINE),
-  cloud: program(VS_SKY, FS_CLOUD),
-  cloudComp: program(VS_SKY, FS_CLOUDCOMP),
   bolt: program(VS_BOLT, FS_BOLT),
 };
 const post = createPost(gl, program, setU, setI);
@@ -230,34 +224,7 @@ gl.bindVertexArray(lineVao);
 const emptyVao = gl.createVertexArray();
 // ---------- weather ----------
 const weather = createWeather(gl);
-const cloudWind = [0, 0], localWind = [0.7, 0.2];
-let cloudTgt = null, cloudPrevVP = null, cloudFrame = 0;
-// two half-resolution cloud targets, ping-ponged: one is drawn, the other is last frame's history
-function cloudTarget(w, h) {
-  if (cloudTgt && cloudTgt.w === w && cloudTgt.h === h) {
-    cloudTgt.cur ^= 1;
-    return { w, h, tex: cloudTgt.t[cloudTgt.cur].tex, fbo: cloudTgt.t[cloudTgt.cur].fbo, hist: cloudTgt.t[cloudTgt.cur ^ 1].tex, fresh: false };
-  }
-  if (cloudTgt) for (const t of cloudTgt.t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); }
-  cloudTgt = { w, h, cur: 0, t: [cloudTex(w, h), cloudTex(w, h)] };
-  return { w, h, tex: cloudTgt.t[0].tex, fbo: cloudTgt.t[0].fbo, hist: cloudTgt.t[1].tex, fresh: true };
-}
-function cloudTex(w, h) {
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  if (post.hasFloat) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
-  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  const fbo = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { tex, fbo };
-}
-const cloudsOn = () => settings.fx.clouds && weather.ready;
+const localWind = [0.7, 0.2];
 gl.bindVertexArray(null);
 
 // ---------- math ----------
@@ -1197,7 +1164,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
-  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
+  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', 0);
   setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
   setU(pr, 'uRain', env.rain);
 }
@@ -1423,44 +1390,7 @@ function render(time, dt) {
     gl.enable(gl.CULL_FACE);
   }
 
-  // volumetric clouds: raymarched at half resolution, then laid over the scene
-  if (cloudsOn()) {
-    const cs = Math.min(1, Math.max(0.25, settings.fx.cloudRes || 0.5));
-    const ct = cloudTarget(Math.max(1, Math.round(W * cs)), Math.max(1, Math.round(H * cs))), ivp = invert(vp);
-    gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, ct.fbo);
-    gl.viewport(0, 0, ct.w, ct.h);
-    let pr = progs.cloud;
-    gl.useProgram(pr.p);
-    setCommon(pr, eye, time);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, post.copy.depth); setI(pr, 'uSceneDepth', 3);
-    setI(pr, 'uNoise3', 7);
-    setU(pr, 'uInvVP', ivp); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uRes', [ct.w, ct.h]);
-    setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11); setU(pr, 'uUpWind', weather.mean);
-    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ct.hist); setI(pr, 'uHist', 4);
-    setU(pr, 'uHistOn', ct.fresh || !cloudPrevVP ? 0 : 1); setU(pr, 'uPrevVP', cloudPrevVP || vp); setU(pr, 'uFrame', cloudFrame++ % 1000);
-    const cd = settings.fx.cdbg | 0;
-    setU(pr, 'uPixAng', 2 * Math.tan(35 * Math.PI / 180) / ct.h);
-    setI(pr, 'uCDbg', cd);
-    if (cd & 256) setU(pr, 'uCloudF', 1);
-    const f = env.flash;
-    setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, f.cloud ? 360 : 335, f.z, f.I] : [0, 0, 0, 0]);
-    gl.bindVertexArray(emptyVao);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    post.beginScene();
-    cloudPrevVP = new Float32Array(vp);
-    pr = progs.cloudComp;
-    gl.useProgram(pr.p);
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, ct.tex); setI(pr, 'uClouds', 2);
-    setI(pr, 'uSceneDepth', 3);
-    setU(pr, 'uInvVP', ivp); setU(pr, 'uCam', eye); setU(pr, 'uBlur', cd & 1024 ? 0 : 1);
-    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.SRC_ALPHA, gl.ZERO, gl.ONE);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.disable(gl.BLEND);
-    gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
-  }
-  else cloudPrevVP = null;
-  // a lightning bolt from the cloud base to the ground, in front of the clouds behind it
+  // a lightning bolt from the cloud base to the ground
   if (env.flash && !env.flash.cloud && env.flash.I > 0.02) drawBolt(env.flash, eye, vp);
   gl.bindVertexArray(null);
 
@@ -1625,7 +1555,7 @@ seasonVis = settings.season;
 
 const FX_LABELS = [['bloom', 'Bloom'], ['rays', 'God rays'], ['ssao', 'Ambient occlusion'], ['dof', 'Depth of field'],
   ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'], ['ocean', 'Ocean ripples (FFT)'],
-  ['mist', 'Valley mist'], ['clouds', 'Volumetric clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
+  ['mist', 'Valley mist'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
 const fxGrid = $('fx-grid');
 for (const [k, label] of FX_LABELS) {
   const l = document.createElement('label');
@@ -1634,44 +1564,18 @@ for (const [k, label] of FX_LABELS) {
   fxGrid.appendChild(l);
   l.firstChild.addEventListener('change', e => { settings.fx[k] = e.target.checked; saveSettings(); });
 }
-const lookEl = $('look'), expoEl = $('exposure'), cresEl = $('cloudres');
+const lookEl = $('look'), expoEl = $('exposure');
 LOOKS.forEach((n, i) => { const o = document.createElement('option'); o.value = i; o.textContent = n; lookEl.appendChild(o); });
 function syncFx() {
   for (const [k] of FX_LABELS) $('fx-' + k).checked = !!settings.fx[k];
   lookEl.value = settings.fx.look; expoEl.value = settings.fx.exposure;
   $('exposure-v').textContent = settings.fx.exposure.toFixed(2) + '×';
-  cresEl.value = settings.fx.cloudRes; $('cloudres-v').textContent = Math.round(settings.fx.cloudRes * 100) + '%';
-  if (cdReady) syncCdbg();
 }
 syncFx();
 lookEl.addEventListener('change', () => { settings.fx.look = Number(lookEl.value); saveSettings(); });
 expoEl.addEventListener('input', () => { settings.fx.exposure = Number(expoEl.value); syncFx(); saveSettings(); });
-cresEl.addEventListener('input', () => { settings.fx.cloudRes = Number(cresEl.value); syncFx(); saveSettings(); });
 $('fx-all').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = true; syncFx(); saveSettings(); });
 $('fx-none').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = false; syncFx(); saveSettings(); });
-// cloud debug: switch single parts of the cloud renderer off to find what jitters
-const CLOUD_DBG = [[1, 'Frame blending (history)'], [2, 'Ray start jitter'], [4, 'Jitter changes each frame'],
-  [1024, 'Upscale blur'], [8, 'Edge detail noise'], [4096, 'Detail noise animation'], [16, 'Shape warp'],
-  [32, 'Sun light march'], [128, 'Adaptive step count'], [256, 'Weather map cross-fade'], [512, 'Wind drift'], [64, 'Cirrus'], [8192, 'Fine steps inside cloud']];
-const cdGrid = $('cdbg-grid');
-{
-  const l = document.createElement('label');
-  l.className = 'check'; l.innerHTML = '<input id="cdbg-on" type="checkbox"> Volumetric clouds';
-  cdGrid.appendChild(l);
-  l.firstChild.addEventListener('change', e => { settings.fx.clouds = e.target.checked; syncFx(); saveSettings(); });
-}
-for (const [b, label] of CLOUD_DBG) {
-  const l = document.createElement('label');
-  l.className = 'check'; l.innerHTML = `<input id="cdbg-${b}" type="checkbox"> ${label}`;
-  cdGrid.appendChild(l);
-  l.firstChild.addEventListener('change', e => { settings.fx.cdbg = e.target.checked ? settings.fx.cdbg & ~b : settings.fx.cdbg | b; saveSettings(); });
-}
-function syncCdbg() {
-  $('cdbg-on').checked = !!settings.fx.clouds;
-  for (const [b] of CLOUD_DBG) $('cdbg-' + b).checked = !(settings.fx.cdbg & b);
-}
-var cdReady = true; syncCdbg();
-$('cdbg-reset').addEventListener('click', () => { settings.fx.cdbg = 0; settings.fx.clouds = true; syncFx(); saveSettings(); });
 
 function setPlaying(on) {
   playing = on;
@@ -1830,13 +1734,13 @@ function frameBody(now) {
   }
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up
   {
-    const r = weather.ready && cloudsOn() ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(290, 320, state.pos[1])) : 0;
+    const r = weather.ready ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(290, 320, state.pos[1])) : 0;
     env.rain += (r - env.rain) * Math.min(1, dt / 3);
     const k = env.rain;
     const grey = c => { const l = (c[0] + c[1] + c[2]) / 3 * 0.8; return c.map(x => (x + (l - x) * k * 0.7) * (1 - 0.5 * k)); };
     env.zenith = grey(env.zenith); env.horizon = grey(env.horizon);
     env.sunCol = env.sunCol.map(x => x * (1 - 0.45 * k)); env.ambSky = env.ambSky.map(x => x * (1 - 0.3 * k));
-    env.flash = cloudsOn() ? weather.flash() : null;
+    env.flash = weather.ready ? weather.flash() : null;
     env.flashI = 0;
     if (env.flash) {
       const d = Math.hypot(env.flash.x - state.pos[0], env.flash.z - state.pos[2]);
@@ -1847,7 +1751,6 @@ function frameBody(now) {
       env.zenith = add(env.zenith, 0.5); env.horizon = add(env.horizon, 0.7);
     }
   }
-  if (!(settings.fx.cdbg & 512)) { cloudWind[0] -= weather.mean[0] * CLOUD_ADV * 16 * dt; cloudWind[1] -= weather.mean[1] * CLOUD_ADV * 16 * dt; }
   const ec = Math.floor(state.pos[0] / CS) + ',' + Math.floor(state.pos[2] / CS);
   if (ec !== emitCenter) { emitCenter = ec; emitDirty = true; }
   if (emitDirty && now - emitT > 400) { emitDirty = false; emitT = now; rebuildEmitters(); }
@@ -1929,6 +1832,6 @@ function restoreAt(data) {
     if (ch && ch.state === 'ready') { state.pos = keepPos.slice(); state.spawned = true; state.restoring = false; clearInterval(restoreTick); }
   }, 100);
 }
-window.__emberwood = { setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
+window.__emberwood = { heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
 if (hot && hot.ready) hot.ready(start); else start(hot && hot.data ? hot.data : {});
 })();

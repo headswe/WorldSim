@@ -204,16 +204,8 @@ body.touch.playing #loading { display: none; }
       <div class="controls">
         <div class="row"><label for="look">Look <output>G cycles</output></label><select id="look"></select></div>
         <div class="row"><label for="exposure">Exposure <output id="exposure-v"></output></label><input id="exposure" type="range" min="0.4" max="2.5" step="0.05"></div>
-        <div class="row"><label for="cloudres">Cloud resolution <output id="cloudres-v"></output></label><input id="cloudres" type="range" min="0.25" max="1" step="0.25"></div>
         <div class="fxgrid" id="fx-grid"></div>
         <div class="seedrow"><button id="fx-all" type="button">All on</button><button id="fx-none" type="button">All off</button></div>
-      </div>
-    </details>
-    <details>
-      <summary>Cloud debug</summary>
-      <div class="controls">
-        <div class="fxgrid" id="cdbg-grid"></div>
-        <div class="seedrow"><button id="cdbg-reset" type="button">All back on</button></div>
       </div>
     </details>
     <div class="foot">Chunks of 32×32×124 blocks are grown and greedy-meshed on background workers. The frame is lit in HDR and runs through 9 post passes before it reaches you.</div>
