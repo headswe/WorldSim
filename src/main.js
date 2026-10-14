@@ -22,7 +22,7 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, ocean: true, mist: true, clouds: true, grain: true, ca: true, fxaa: true, look: 0, exposure: 0.95,
+  caustics: true, ocean: true, mist: true, clouds: true, ca: true, fxaa: true, look: 0, exposure: 0.95,
   // volumetric cloud render scale (of the screen); phones default to half
   cloudRes: matchMedia('(pointer: coarse)').matches ? 0.5 : 0.75 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
@@ -1619,7 +1619,7 @@ seasonVis = settings.season;
 
 const FX_LABELS = [['bloom', 'Bloom'], ['rays', 'God rays'], ['ssao', 'Ambient occlusion'], ['dof', 'Depth of field'],
   ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'], ['ocean', 'Ocean ripples (FFT)'],
-  ['mist', 'Valley mist'], ['clouds', 'Volumetric clouds'], ['grain', 'Film grain'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
+  ['mist', 'Valley mist'], ['clouds', 'Volumetric clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
 const fxGrid = $('fx-grid');
 for (const [k, label] of FX_LABELS) {
   const l = document.createElement('label');
