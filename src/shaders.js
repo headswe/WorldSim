@@ -375,7 +375,8 @@ void main(){
       vec2 p1=vWorld.xz/uOceanL, p2=mat2(0.8,-0.6,0.6,0.8)*vWorld.xz/(uOceanL*0.37)+0.31;
       vec4 o1=texture(uOcean,p1), o2=texture(uOcean,p2);
       sl=o1.xy+o2.xy*0.45;
-      jf=min(o1.z,1.0-(1.0-o2.z)*0.5);
+      jf=clamp(min(o1.z,1.0-(1.0-o2.z)*0.5),0.0,1.0);
+      if(isnan(jf)||isnan(sl.x)||isnan(sl.y)){ jf=1.0; sl=vec2(0.0); }
     } else {
       float ce=0.08, c0=seaChop(vWorld.xz,uTime);
       sl=vec2(seaChop(vWorld.xz+vec2(ce,0.0),uTime)-c0,seaChop(vWorld.xz+vec2(0.0,ce),uTime)-c0)/ce;

@@ -179,15 +179,35 @@ function createOcean(gl, program, setU, setI, hasFloat) {
     gl.bindVertexArray(null);
     gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE);
   }
-  return { ok: true, tex, update, L, readback() {
+  // Some phone GPUs accept the float targets but return garbage from these passes (a sea of
+  // folding foam everywhere), so the first result is checked once: the Jacobian must average
+  // near 1 and every value must be finite, otherwise the ocean switches itself off and the
+  // water uses the analytic chop instead.
+  let checked = false;
+  function update2(time, wind) {
+    update(time, wind);
+    if (checked) return;
+    checked = true;
+    let good = false;
+    try {
+      while (gl.getError() !== gl.NO_ERROR) {}
+      const r = api.readback();
+      const fin = r.r.every(c => Number.isFinite(c[0]) && Number.isFinite(c[1]));
+      good = fin && gl.getError() === gl.NO_ERROR && r.meanJ > 0.85 && r.meanJ < 1.15 && r.foamFrac < 0.6 &&
+        Math.abs(r.r[0][0]) < 4 && Math.abs(r.r[0][1]) < 4 && Math.abs(r.r[1][0]) < 4 && Math.abs(r.r[1][1]) < 4;
+    } catch (e) { good = false; }
+    if (!good) { api.ok = false; console.warn('ocean: FFT result looks wrong on this GPU, using the analytic chop'); }
+  }
+  const api = { ok: true, tex, update: update2, L, readback() {
     // for tests: min/max of each channel of the result
     const px = new Float32Array(N * N * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, outFbo);
     gl.readPixels(0, 0, N, N, gl.RGBA, gl.FLOAT, px);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     const r = [[1e9, -1e9], [1e9, -1e9], [1e9, -1e9], [1e9, -1e9]];
-    let neg = 0;
-    for (let i = 0; i < N * N; i++) { for (let c = 0; c < 4; c++) { r[c][0] = Math.min(r[c][0], px[i * 4 + c]); r[c][1] = Math.max(r[c][1], px[i * 4 + c]); } if (px[i * 4 + 2] < 0.5) neg++; }
-    return { r, foamFrac: neg / (N * N) };
+    let neg = 0, sj = 0;
+    for (let i = 0; i < N * N; i++) { for (let c = 0; c < 4; c++) { r[c][0] = Math.min(r[c][0], px[i * 4 + c]); r[c][1] = Math.max(r[c][1], px[i * 4 + c]); } if (px[i * 4 + 2] < 0.5) neg++; sj += px[i * 4 + 2]; }
+    return { r, foamFrac: neg / (N * N), meanJ: sj / (N * N) };
   } };
+  return api;
 }
