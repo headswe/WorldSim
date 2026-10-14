@@ -163,7 +163,7 @@ void main(){
 
 const FS_FINAL = POST_COMMON + `
 uniform sampler2D uSrc, uDepth; uniform vec2 uTexel, uRes;
-uniform int uLook; uniform float uCA, uVig, uFXAA, uTime;
+uniform int uLook; uniform float uCA, uFXAA, uTime;
 const vec3 LUMA=vec3(0.299,0.587,0.114);
 vec3 tex(vec2 uv){ return texture(uSrc,uv).rgb; }
 vec3 fxaa(vec2 uv){
@@ -238,7 +238,6 @@ void main(){
     c=mix(c*vec3(1.04,0.98,0.9),vec3(0.09,0.05,0.04),clamp(e*0.5,0.0,1.0));
   }
   vec2 vc=(uv-0.5)*vec2(uRes.x/uRes.y,1.0);
-  c*=mix(1.0,smoothstep(1.15,0.25,length(vc)),uVig);
   o=vec4(c,1.0);
 }`;
 
@@ -373,7 +372,7 @@ function createPost(gl, program, setU, setI) {
         tex(p, 'uSrc', 0, T.ldr.color); tex(p, 'uDepth', 1, T.scene.depth);
         setU(p, 'uTexel', [1 / W, 1 / H]); setU(p, 'uRes', [W, H]); setU(p, 'uNearFar', nf);
         gl.uniform1i(p.u.uLook, fx.look | 0);
-        setU(p, 'uCA', fx.ca ? 1 : 0); setU(p, 'uVig', 0.55);
+        setU(p, 'uCA', fx.ca ? 1 : 0);
         setU(p, 'uFXAA', fx.fxaa ? 1 : 0); setU(p, 'uTime', o.time);
       });
       gl.depthMask(true);
