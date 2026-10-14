@@ -87,6 +87,17 @@ uniform sampler2D uCloudMap; uniform vec2 uCloudO; uniform float uCloudOn;
 uniform sampler2D uCloudMapP; uniform vec2 uCloudOP; uniform float uCloudF;
 vec2 cloudUV(vec2 xz){ return (xz/16.0-uCloudO)/128.0; }
 vec4 cloudMap(vec2 xz){ return mix(texture(uCloudMapP,(xz/16.0-uCloudOP)/128.0),texture(uCloudMap,cloudUV(xz)),uCloudF); }
+// smooth version for the cloud shapes: a cubic B-spline over the 128-texel map (4 bilinear taps),
+// because a steep density ramp over plain bilinear filtering shows the map's texels as
+// staircase edges
+vec4 bspl(sampler2D s, vec2 uv){
+  vec2 p=uv*128.0-0.5, i=floor(p), f=p-i, f2=f*f, f3=f2*f;
+  vec2 w0=(1.0-3.0*f+3.0*f2-f3)/6.0, w1=(4.0-6.0*f2+3.0*f3)/6.0, w2=(1.0+3.0*f+3.0*f2-3.0*f3)/6.0, w3=f3/6.0;
+  vec2 g0=w0+w1, g1=w2+w3;
+  vec2 c0=(i-0.5+w1/g0)/128.0, c1=(i+1.5+w3/g1)/128.0;
+  return g0.y*(g0.x*texture(s,vec2(c0.x,c0.y))+g1.x*texture(s,vec2(c1.x,c0.y)))+g1.y*(g0.x*texture(s,vec2(c0.x,c1.y))+g1.x*texture(s,vec2(c1.x,c1.y)));
+}
+vec4 cloudMapS(vec2 xz){ return mix(bspl(uCloudMapP,(xz/16.0-uCloudOP)/128.0),bspl(uCloudMap,cloudUV(xz)),uCloudF); }
 vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(xz/16.0-uCloudOP)/128.0+du,l),textureLod(uCloudMap,cloudUV(xz)+du,l),uCloudF); }
 float cloudShade(vec3 p){
   if(uCloudOn<0.5) return 1.0;
@@ -772,7 +783,11 @@ float dens(vec3 p, bool fine){
   vec2 uv=cloudUV(p.xz);
   vec2 ee=smoothstep(vec2(0.0),vec2(0.12),uv)*smoothstep(vec2(1.0),vec2(0.88),uv);
   float edge=ee.x*ee.y;
-  vec4 m=cloudMap(p.xz);
+  // the map is looked up a little off position (a slow noise warp) so cloud outlines don't follow
+  // the grid of the simulation cells
+  vec4 m;
+  if(fine){ vec2 wq=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0021,0.43).xzy).rg-0.5; m=cloudMapS(p.xz+wq*26.0); }
+  else m=cloudMap(p.xz);
   float ha=(p.y-CB)/(CT-CB);
   // anvil: a thunderhead's top spreads into a wide flat sheet under the tropopause, blown downwind
   float anv=0.0;
@@ -853,7 +868,7 @@ void main(){
       // rain clouds are thick and dark underneath
       float rb=cloudMap(p.xz).b;
       amb*=mix(1.0,0.35+0.5*h,rb);
-      vec3 S=(sunL*beer*ph*mix(1.0,powder*1.8,0.5)*1.25+amb*mix(0.45,0.8,h))*sigma;
+      vec3 S=(sunL*beer*ph*mix(1.0,powder*1.8,0.5)*1.25+amb*mix(0.58,0.85,h))*sigma;
       // lightning lights the cloud around the stroke from inside
       if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*14.0*exp(-length(p-uFlash.xyz)/80.0)*sigma;
       float tr=exp(-sigma*dt);
@@ -885,7 +900,8 @@ void main(){
   vec3 hz=skyCol(rd);
   col=mix(hz*(1.0-T),col,fade);
   T=mix(1.0,T,fade*0.85+0.15);
-  o=vec4(outHDR(col),T);
+  // at night stars are points, so even thin cloud in front of them should all but hide them
+  o=vec4(outHDR(col),T*mix(1.0,T,uNight));
   // temporal accumulation: blend with last frame's clouds reprojected to where this ray's cloud was
   if(uHistOn>0.5){
     vec3 pw=ro+rd*(ww>1e-4 ? tw/ww : min(t1,4000.0));

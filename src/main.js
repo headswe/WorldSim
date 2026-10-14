@@ -1421,7 +1421,9 @@ function render(time, dt) {
 
   // volumetric clouds: raymarched at half resolution, then laid over the scene
   if (cloudsOn()) {
-    const ct = cloudTarget(Math.max(1, W >> 1), Math.max(1, H >> 1)), ivp = invert(vp);
+    // three-quarter resolution on desktop GPUs (half looked soft), half on phones
+    const cs = isTouch ? 0.5 : 0.75;
+    const ct = cloudTarget(Math.max(1, Math.round(W * cs)), Math.max(1, Math.round(H * cs))), ivp = invert(vp);
     gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
     gl.bindFramebuffer(gl.FRAMEBUFFER, ct.fbo);
     gl.viewport(0, 0, ct.w, ct.h);
