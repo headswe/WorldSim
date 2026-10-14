@@ -473,9 +473,11 @@ void main(){
     vec2 cq=vec2(dot(vWorld.xz,cw)*0.45, dot(vWorld.xz,vec2(-cw.y,cw.x))*1.1)+vec2(-uTime*0.5,uTime*0.2);
     float patchy=smoothstep(0.45,0.7,vnoise(vWorld.xz*0.17+cw*uTime*0.35))*smoothstep(0.38,0.66,vnoise(cq));
     float cap=smoothstep(thr,thr-0.35,seaJ)*patchy;
-    // surf: lines of white water roll in over the shallows and break on the beach
+    // surf: lines of white water roll in and break on the beach. Depth comes in whole blocks, so
+    // only the strip touching land has a depth between 0 and 1 block; over a wide 1-block shelf
+    // the depth is flat, the phase came from noise alone and the whole shelf flashed with blotches
     float ph=swell*9.0+uTime*1.6+fn*1.3;
-    float band=smoothstep(0.82,0.98,sin(ph))*smoothstep(0.05,0.2,swell)*(1.0-smoothstep(0.3,0.75,swell))*smoothstep(0.2,0.55,vnoise(q*1.7-vec2(uTime*0.2,0.0))+0.15);
+    float band=smoothstep(0.82,0.98,sin(ph))*smoothstep(0.05,0.2,swell)*(1.0-smoothstep(0.24,0.32,swell))*smoothstep(0.2,0.55,vnoise(q*1.7-vec2(uTime*0.2,0.0))+0.15);
     float shore=(1.0-smoothstep(0.0,0.18,swell))*smoothstep(0.25,0.6,vnoise(vWorld.xz*2.2-vec2(uTime*0.5,0.0))+0.25*sin(uTime*1.5+dot(vWorld.xz,vec2(0.27,0.2))));
     foam=max(band*0.75,max(cap*0.9,shore));
   }
