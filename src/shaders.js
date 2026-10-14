@@ -797,6 +797,8 @@ float dens(vec3 p, bool fine){
   }
   if(m.r<0.02 && anv<0.01) return 0.0;
   float cv=mix(texture(uCloudMap2P,(p.xz/16.0-uCloudOP)/128.0).g,texture(uCloudMap2,uv).g,uCloudF);
+  // sparse cloud is fair-weather cumulus: small puffs, not slivers torn from a stratus sheet
+  cv=max(cv,1.0-smoothstep(0.12,0.45,m.r));
   vec3 w=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
   float d=0.0;
   float top=CB+14.0+m.g*(CT-CB-14.0)*mix(0.45,1.0,cv);
@@ -843,10 +845,16 @@ void main(){
   }
   t1=min(t1,t0+2200.0);
   if(t1<=t0){ o=vec4(0.0,0.0,0.0,1.0); return; }
-  const int STEPS=40;
+  // step count follows the length of ray inside the layer: a flat ray toward the horizon crosses
+  // up to 2200 blocks and 40 fixed steps of 55 blocks skipped over small clouds, which then
+  // crawled and flickered as the camera moved
+  int STEPS=int(clamp((t1-t0)/14.0,32.0,110.0));
   float dt=(t1-t0)/float(STEPS);
-  // the start offset cycles each frame (golden-ratio sequence) and the history below averages it out
-  float t=t0+dt*fract(h1(uint(gl_FragCoord.x)*1973u+uint(gl_FragCoord.y)*9277u)+uFrame*0.618034);
+  // the start offset is interleaved gradient noise (neighbouring pixels sample evenly spread
+  // offsets, so the remaining noise is fine-grained) cycled each frame by the golden ratio; the
+  // history below averages it out
+  float ign=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(0.06711056,0.00583715))));
+  float t=t0+dt*fract(ign+uFrame*0.618034);
   float tw=0.0, ww=0.0;
   float mu=dot(rd,uSunDir);
   // two-lobe Henyey-Greenstein: bright silver lining toward the sun, soft back-scatter

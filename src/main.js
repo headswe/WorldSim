@@ -22,7 +22,9 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, ocean: true, mist: true, clouds: true, grain: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
+  caustics: true, ocean: true, mist: true, clouds: true, grain: true, ca: true, fxaa: true, look: 0, exposure: 0.95,
+  // volumetric cloud render scale (of the screen); phones default to half
+  cloudRes: matchMedia('(pointer: coarse)').matches ? 0.5 : 0.75 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
@@ -1421,8 +1423,7 @@ function render(time, dt) {
 
   // volumetric clouds: raymarched at half resolution, then laid over the scene
   if (cloudsOn()) {
-    // three-quarter resolution on desktop GPUs (half looked soft), half on phones
-    const cs = isTouch ? 0.5 : 0.75;
+    const cs = Math.min(1, Math.max(0.25, settings.fx.cloudRes || 0.5));
     const ct = cloudTarget(Math.max(1, Math.round(W * cs)), Math.max(1, Math.round(H * cs))), ivp = invert(vp);
     gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
     gl.bindFramebuffer(gl.FRAMEBUFFER, ct.fbo);
@@ -1627,16 +1628,18 @@ for (const [k, label] of FX_LABELS) {
   fxGrid.appendChild(l);
   l.firstChild.addEventListener('change', e => { settings.fx[k] = e.target.checked; saveSettings(); });
 }
-const lookEl = $('look'), expoEl = $('exposure');
+const lookEl = $('look'), expoEl = $('exposure'), cresEl = $('cloudres');
 LOOKS.forEach((n, i) => { const o = document.createElement('option'); o.value = i; o.textContent = n; lookEl.appendChild(o); });
 function syncFx() {
   for (const [k] of FX_LABELS) $('fx-' + k).checked = !!settings.fx[k];
   lookEl.value = settings.fx.look; expoEl.value = settings.fx.exposure;
   $('exposure-v').textContent = settings.fx.exposure.toFixed(2) + '×';
+  cresEl.value = settings.fx.cloudRes; $('cloudres-v').textContent = Math.round(settings.fx.cloudRes * 100) + '%';
 }
 syncFx();
 lookEl.addEventListener('change', () => { settings.fx.look = Number(lookEl.value); saveSettings(); });
 expoEl.addEventListener('input', () => { settings.fx.exposure = Number(expoEl.value); syncFx(); saveSettings(); });
+cresEl.addEventListener('input', () => { settings.fx.cloudRes = Number(cresEl.value); syncFx(); saveSettings(); });
 $('fx-all').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = true; syncFx(); saveSettings(); });
 $('fx-none').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = false; syncFx(); saveSettings(); });
 
