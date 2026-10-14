@@ -17,3 +17,9 @@ This inlines `src/` into a single self-contained `index.html` (and `emberwood.ht
 ## Deploy
 
 Every push to `main` runs `.github/workflows/pages.yml`, which builds and deploys `index.html` to GitHub Pages.
+
+## Sharing a spot
+
+Menu → Settings → **Share this spot** copies a link whose hash holds the seed, position, view, time of day and season, e.g.
+`https://headswe.github.io/WorldSim/#s=1337&p=6544,80,2994&v=0.50,-0.10&t=15.0&se=2`.
+Opening the link grows that planet and drops you there. The same code (or the whole link) can be pasted into the box and sent with **Go**.

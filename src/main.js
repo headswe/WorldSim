@@ -919,7 +919,7 @@ function setSeason(i, toast) {
   if (toast) showToast(SEASONS[settings.season]);
   weather.setSeason(settings.season);
 }
-function resetWorld() {
+function resetWorld(keepSpot) {
   worldGen++;
   for (const ch of chunks.values()) { freeMesh(ch.opaque); freeMesh(ch.water); }
   chunks.clear();
@@ -929,7 +929,9 @@ function resetWorld() {
   gl.bindTexture(gl.TEXTURE_2D, heightTex);
   gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, HM, HM, gl.RED, gl.UNSIGNED_BYTE, heightCPU);
   state.spawned = false;
-  state.pos = [16, 72, 16]; state.vel = [0, 0, 0];
+  if (!keepSpot) { state.pos = [16, 72, 16]; state.restoring = false; }
+  state.vel = [0, 0, 0];
+  if (keepSpot) state.restoring = true;
   requestPlanet();
 }
 
@@ -1514,6 +1516,60 @@ $('regen').addEventListener('click', () => {
   settings.seed = Number.isFinite(s) ? s : Math.floor(Math.random() * 1e6);
   seedEl.value = settings.seed; saveSettings(); resetWorld();
 });
+// ---- sharing a spot: seed, position, view, time of day and season in one short code ----
+// The code is also the URL hash, so on a normal page (GitHub Pages) a shared link opens right there.
+// Inside an embedded artifact the link can't carry a hash, so the code can be pasted into the menu.
+function spotCode() {
+  const p = state.pos, r = v => Math.round(v * 10) / 10;
+  return `s=${settings.seed}&p=${r(p[0])},${r(p[1])},${r(p[2])}&v=${state.yaw.toFixed(2)},${state.pitch.toFixed(2)}&t=${settings.tod.toFixed(1)}&se=${settings.season}`;
+}
+function parseSpot(text) {
+  if (!text) return null;
+  const h = String(text).trim(), q = h.includes('#') ? h.slice(h.indexOf('#') + 1) : h;
+  const m = {};
+  for (const kv of q.split('&')) { const i = kv.indexOf('='); if (i > 0) m[kv.slice(0, i).trim()] = kv.slice(i + 1).trim(); }
+  const seed = parseInt(m.s, 10), pos = (m.p || '').split(',').map(Number);
+  if (!Number.isFinite(seed) || pos.length !== 3 || !pos.every(Number.isFinite)) return null;
+  const v = (m.v || '').split(',').map(Number), t = parseFloat(m.t), se = parseInt(m.se, 10);
+  return {
+    seed, pos: [((pos[0] % PLANET_W) + PLANET_W) % PLANET_W, Math.min(CH + 60, Math.max(1, pos[1])), Math.min(PLANET_H - 1, Math.max(0, pos[2]))],
+    yaw: Number.isFinite(v[0]) ? v[0] : state.yaw, pitch: Number.isFinite(v[1]) ? Math.max(-1.5, Math.min(1.5, v[1])) : 0,
+    tod: Number.isFinite(t) ? ((t % 24) + 24) % 24 : null, season: Number.isFinite(se) ? ((se % 4) + 4) % 4 : null,
+  };
+}
+function shareLink() {
+  const code = spotCode();
+  return /^https?:$/.test(location.protocol) && !/claude|anthropic|usercontent/.test(location.hostname)
+    ? location.href.split('#')[0] + '#' + code : code;
+}
+// arrive at a spot: same seed keeps the loaded world, another seed grows that planet first
+function goToSpot(sp) {
+  if (sp.tod !== null) settings.tod = sp.tod;
+  if (sp.season !== null && sp.season !== settings.season) setSeason(sp.season);
+  const data = { world: 2, pos: sp.pos, yaw: sp.yaw, pitch: sp.pitch, fly: true };
+  if (sp.seed !== settings.seed) {
+    settings.seed = sp.seed; seedEl.value = sp.seed; saveSettings();
+    resetWorld(true);
+  }
+  restoreAt(data);
+}
+$('spot-share').addEventListener('click', async () => {
+  const link = shareLink(), el = $('spot');
+  el.value = link;
+  let ok = false;
+  try { await navigator.clipboard.writeText(link); ok = true; } catch (err) {}
+  if (!ok) { el.focus(); el.select(); try { ok = document.execCommand('copy'); } catch (err) {} }
+  $('spot-v').textContent = ok ? 'copied' : 'select and copy';
+  setTimeout(() => { $('spot-v').textContent = ''; }, 2500);
+});
+$('spot-go').addEventListener('click', () => {
+  const sp = parseSpot($('spot').value);
+  if (!sp) { $('spot-v').textContent = 'not a spot code'; setTimeout(() => { $('spot-v').textContent = ''; }, 2500); return; }
+  goToSpot(sp);
+  setPlaying(true);
+});
+$('spot').addEventListener('keydown', e => { if (e.key === 'Enter') $('spot-go').click(); e.stopPropagation(); });
+window.addEventListener('hashchange', () => { const sp = parseSpot(location.hash); if (sp) goToSpot(sp); });
 $('reseed').addEventListener('click', () => {
   settings.seed = Math.floor(Math.random() * 1e6);
   seedEl.value = settings.seed; saveSettings(); resetWorld();
@@ -1782,18 +1838,30 @@ function start(data) {
     } catch (err) {}
   }
   if (data && data.pos && data.world !== 2) data = null; // saved on the old flat world
-  requestPlanet();
-  if (data && data.pos) {
-    state.yaw = data.yaw; state.pitch = data.pitch; state.fly = data.fly;
-    state.pos = data.pos.slice(); state.spawned = false; state.restoring = true;
-    const keepPos = data.pos.slice();
-    const tick = setInterval(() => {
-      const ch = chunks.get(ckey(Math.floor(keepPos[0] / CS), Math.floor(keepPos[2] / CS)));
-      if (ch && ch.state === 'ready') { state.pos = keepPos; state.spawned = true; state.restoring = false; clearInterval(tick); }
-    }, 100);
+  // a shared spot in the URL wins over everything else
+  let shared = null;
+  try { shared = parseSpot(location.hash); } catch (err) {}
+  if (shared) {
+    if (shared.seed !== settings.seed) { settings.seed = shared.seed; seedEl.value = shared.seed; saveSettings(); }
+    if (shared.season !== null && shared.season !== settings.season) setSeason(shared.season);
+    if (shared.tod !== null) settings.tod = shared.tod;
+    data = { world: 2, pos: shared.pos, yaw: shared.yaw, pitch: shared.pitch, fly: true };
   }
+  requestPlanet();
+  if (data && data.pos) restoreAt(data);
   requestAnimationFrame(frame);
 }
-window.__emberwood = { setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, get boltPath() { return boltPath; } };
+let restoreTick = 0;
+function restoreAt(data) {
+  state.yaw = data.yaw; state.pitch = data.pitch; state.fly = data.fly;
+  state.pos = data.pos.slice(); state.vel = [0, 0, 0]; state.spawned = false; state.restoring = true;
+  const keepPos = data.pos.slice();
+  clearInterval(restoreTick);
+  restoreTick = setInterval(() => {
+    const ch = chunks.get(ckey(Math.floor(keepPos[0] / CS), Math.floor(keepPos[2] / CS)));
+    if (ch && ch.state === 'ready') { state.pos = keepPos.slice(); state.spawned = true; state.restoring = false; clearInterval(restoreTick); }
+  }, 100);
+}
+window.__emberwood = { setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
 if (hot && hot.ready) hot.ready(start); else start(hot && hot.data ? hot.data : {});
 })();
