@@ -1147,7 +1147,7 @@ function boltPaths(f) {
     }
     paths.push(pts);
   };
-  walk(f.x, 150, f.z, Math.max(f.ground, 31), 1, 0);
+  walk(f.x, 320, f.z, Math.max(f.ground, 31), 1, 0);
   return paths;
 }
 function drawBolt(f, eye, vp) {
@@ -1440,10 +1440,11 @@ function render(time, dt) {
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ct.hist); setI(pr, 'uHist', 4);
     setU(pr, 'uHistOn', ct.fresh || !cloudPrevVP ? 0 : 1); setU(pr, 'uPrevVP', cloudPrevVP || vp); setU(pr, 'uFrame', cloudFrame++ % 1000);
     const cd = settings.fx.cdbg | 0;
+    setU(pr, 'uPixAng', 2 * Math.tan(35 * Math.PI / 180) / ct.h);
     setI(pr, 'uCDbg', cd);
     if (cd & 256) setU(pr, 'uCloudF', 1);
     const f = env.flash;
-    setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, f.cloud ? 190 : 165, f.z, f.I] : [0, 0, 0, 0]);
+    setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, f.cloud ? 360 : 335, f.z, f.I] : [0, 0, 0, 0]);
     gl.bindVertexArray(emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     post.beginScene();
@@ -1651,7 +1652,7 @@ $('fx-none').addEventListener('click', () => { for (const [k] of FX_LABELS) sett
 // cloud debug: switch single parts of the cloud renderer off to find what jitters
 const CLOUD_DBG = [[1, 'Frame blending (history)'], [2, 'Ray start jitter'], [4, 'Jitter changes each frame'],
   [1024, 'Upscale blur'], [8, 'Edge detail noise'], [4096, 'Detail noise animation'], [16, 'Shape warp'],
-  [32, 'Sun light march'], [128, 'Adaptive step count'], [256, 'Weather map cross-fade'], [512, 'Wind drift'], [64, 'Cirrus']];
+  [32, 'Sun light march'], [128, 'Adaptive step count'], [256, 'Weather map cross-fade'], [512, 'Wind drift'], [64, 'Cirrus'], [8192, 'Fine steps inside cloud']];
 const cdGrid = $('cdbg-grid');
 {
   const l = document.createElement('label');
@@ -1829,7 +1830,7 @@ function frameBody(now) {
   }
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up
   {
-    const r = weather.ready && cloudsOn() ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(125, 150, state.pos[1])) : 0;
+    const r = weather.ready && cloudsOn() ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(290, 320, state.pos[1])) : 0;
     env.rain += (r - env.rain) * Math.min(1, dt / 3);
     const k = env.rain;
     const grey = c => { const l = (c[0] + c[1] + c[2]) / 3 * 0.8; return c.map(x => (x + (l - x) * k * 0.7) * (1 - 0.5 * k)); };
