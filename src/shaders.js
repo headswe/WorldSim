@@ -6,22 +6,30 @@ float h1(uint x){ return float(ih(x))*(1.0/4294967295.0); }
 // vertex offset; nrm gets the surface normal. Eight wave trains run in fixed compass directions;
 // the simulated wind (uSeaWind.xy direction, .z strength) decides how tall each one is, so the sea
 // builds up downwind and rises with storms without the wave phases ever jumping.
+// seaJ is the Jacobian of the horizontal displacement (Tessendorf 2001): 1 on flat water, below 1
+// where crests are squeezed together, below 0 where the surface folds over. Whitecaps form there.
 uniform vec3 uSeaWind;
+float seaJ;
 vec3 seaWave(vec2 p, float t, float s, float fp, out vec3 nrm){
   float Lw[8]=float[8](21.0,8.5,16.0,11.0,19.0,7.0,13.5,9.5);
   vec3 off=vec3(0.0); vec3 n=vec3(0.0,1.0,0.0);
   vec2 wd=uSeaWind.xy;
+  float jxx=1.0, jzz=1.0, jxz=0.0;
+  // steeper, sharper-crested waves in stronger wind
+  float Q=mix(0.5,0.85,clamp((uSeaWind.z-0.5)/1.5,0.0,1.0));
   for(int i=0;i<8;i++){
     float ang=float(i)*0.7854+0.3;
     vec2 D=vec2(cos(ang),sin(ang));
     float al=max(dot(D,wd),0.0);
     // waves only a few pixels long are faded out, otherwise they alias into shimmer far away
     float a=(0.05+0.55*al*al)*0.03*Lw[i]*pow(uSeaWind.z,1.4)*s*(1.0-smoothstep(Lw[i]*0.12,Lw[i]*0.4,fp));
-    float k=6.2831/Lw[i], c=sqrt(9.8/k)*0.55, f=k*dot(D,p)-k*c*t, Q=0.5;
-    float cf=cos(f), sf=sin(f);
+    float k=6.2831/Lw[i], c=sqrt(9.8/k)*0.55, f=k*dot(D,p)-k*c*t;
+    float cf=cos(f), sf=sin(f), qk=Q*a*k*sf;
     off.xz+=Q*a*D*cf; off.y+=a*sf;
     n.xz-=D*k*a*cf; n.y-=Q*k*a*sf;
+    jxx-=qk*D.x*D.x; jzz-=qk*D.y*D.y; jxz-=qk*D.x*D.y;
   }
+  seaJ=jxx*jzz-jxz*jxz;
   nrm=normalize(n);
   return off;
 }
@@ -393,6 +401,8 @@ void main(){
   float gl=sea ? mix(220.0,40.0,smoothstep(0.05,0.8,fpx)) : 220.0;
   float spec=pow(max(dot(R,uSunDir),0.0),gl)*sh*(gl/220.0*0.6+0.4);
   vec3 col=mix(under,refl,fres)+uSunCol*spec*2.0;
+  // light shining through the thin water of a crest: raised water glows brighter and greener
+  if(sea) col+=vec3(0.035,0.12,0.09)*(uAmbSky*1.2+uSunCol*0.45*sh)*max(crest,0.0)*(1.0-fres)*min(1.0,0.4+0.5*uSeaWind.z);
   // shoreline foam
   float fn=vnoise(q*3.0+vec2(uTime*0.3,-uTime*0.2));
   float foam=(1.0-smoothstep(0.0,0.35+0.25*sin(uTime*1.6+q.x*0.8+q.y*0.6),thick))*smoothstep(0.35,0.65,fn);
@@ -401,7 +411,10 @@ void main(){
     // by the depth buffer, so it reads the same on every GPU
     // whitecaps on the highest crests out at sea
     float gale=clamp((uSeaWind.z-0.7)/1.3,0.0,1.0);
-    float cap=smoothstep(0.72-0.35*gale,0.95-0.3*gale,crest)*step(0.5,uSeaWind.z)*(0.5+0.5*gale)*smoothstep(0.4,0.75,vnoise(vWorld.xz*1.3+vec2(uTime*0.4,uTime*0.25)));
+    // where the surface is squeezed toward folding the crest breaks; the threshold rises with the
+    // wind so a breeze only whitens the sharpest crests and a gale whitens most of them
+    float thr=0.35+0.45*gale;
+    float cap=smoothstep(thr,thr-0.3,seaJ)*smoothstep(0.25,0.6,vnoise(vWorld.xz*1.3+vec2(uTime*0.4,uTime*0.25)));
     // surf: lines of white water roll in over the shallows and break on the beach
     float ph=swell*9.0+uTime*1.6+fn*1.3;
     float band=smoothstep(0.82,0.98,sin(ph))*smoothstep(0.05,0.2,swell)*(1.0-smoothstep(0.3,0.75,swell))*smoothstep(0.2,0.55,vnoise(q*1.7-vec2(uTime*0.2,0.0))+0.15);
