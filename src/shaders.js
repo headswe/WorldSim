@@ -794,7 +794,15 @@ float dens(vec3 p, bool fine){
   // the map is looked up a little off position (a slow noise warp) so cloud outlines don't follow
   // the grid of the simulation cells
   vec4 m;
-  if(fine){ vec2 wq=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0021,0.43).xzy).rg-0.5; m=cloudMapS(p.xz+wq*26.0); }
+  // The warp also changes with height and the layer leans downwind higher up; with a 2D map and
+  // a tall layer, cloud edges otherwise stand as vertical walls that look like streaks radiating
+  // from overhead.
+  if(fine){
+    vec3 wq=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0021,p.y*0.0015).xzy).rgg-vec3(0.5,0.5,0.3);
+    vec3 wq2=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0071+0.3,p.y*0.003).xzy).rgg-vec3(0.5,0.5,0.3);
+    vec2 sh=uUpWind*(p.y-CB)*0.35;
+    m=cloudMapS(p.xz+vec2(wq.x,wq2.x)*70.0+vec2(wq2.y,wq.y)*30.0+sh);
+  }
   else m=cloudMap(p.xz);
   float ha=(p.y-CB)/(CT-CB);
   // anvil: a thunderhead's top spreads into a wide flat sheet under the ceiling, blown downwind
@@ -820,12 +828,15 @@ float dens(vec3 p, bool fine){
     float prof=mix(pst,pcu,cv);
     float cov=clamp(m.r*edge,0.0,1.0)*prof;
     // base shape: low-frequency fbm with Worley billows; stratus stretched flat, cumulus round
-    vec3 sp=w*mix(vec3(0.0026,0.012,0.0026),vec3(0.0042,0.0055,0.0042),cv);
+    vec3 sp=w*mix(vec3(0.0045,0.0045,0.0045),vec3(0.0085,0.0085,0.0085),cv);
     vec2 n=texture(uNoise3,sp).rg;
     float shape=mix(n.r*0.8+n.g*0.2,n.r*0.45+n.g*0.55,cv);
     // coverage threshold: more cover lets more of the noise through; the result is scaled by
     // cover so sparse cloud stays thin at the edges
-    d=remap(shape,1.0-cov,1.0,0.0,1.0)*cov;
+    // cover is capped below 1 so even overcast stays broken into cells, not one smooth sheet that
+    // takes on the weather map's swirls
+    float cc=cov*0.72;
+    d=clamp(remap(shape,1.0-cc,1.0,0.0,1.0)*1.6,0.0,1.0)*cov;
     if(fine && d>0.0){
       // edge erosion with finer noise: wispy at the base, billowy higher up
       vec2 dn=texture(uNoise3,w*0.024+vec3(0.0,uTime*0.008,0.0)).rg;
@@ -934,10 +945,10 @@ void main(){
       vec2 puv=pc.xy/pc.w*0.5+0.5;
       if(puv.x>0.0&&puv.y>0.0&&puv.x<1.0&&puv.y<1.0){
         vec4 h=texture(uHist,puv);
-        // the reprojection follows the camera, so history stays usable while turning; only a large
-        // jump (or the edge of the screen) lets the fresh, noisier frame through
-        float mv=length((puv-uv)*uRes);
-        o=mix(o,h,0.92-0.45*smoothstep(8.0,60.0,mv));
+        // the reprojection follows the camera, so history stays valid while turning and moving.
+        // It used to be trusted less when the view moved fast, and each fresh frame's raymarch
+        // noise then showed as shimmer that only settled once the camera stopped.
+        o=mix(o,h,0.9);
       }
     }
   }
@@ -956,5 +967,7 @@ void main(){
     float lo=min(uCam.y,w.y), hi=max(uCam.y,w.y);
     if(hi<150.0||lo>430.0){ o=vec4(0.0,0.0,0.0,1.0); return; }
   }
-  o=texture(uClouds,uv);
+  // a light 5-tap filter over the low-resolution cloud image hides what raymarch noise is left
+  vec2 tx=1.0/vec2(textureSize(uClouds,0));
+  o=texture(uClouds,uv)*0.4+(texture(uClouds,uv+vec2(tx.x,0.0))+texture(uClouds,uv-vec2(tx.x,0.0))+texture(uClouds,uv+vec2(0.0,tx.y))+texture(uClouds,uv-vec2(0.0,tx.y)))*0.15;
 }`;
