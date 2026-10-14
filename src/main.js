@@ -24,7 +24,9 @@ const HOTBAR = [
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
   caustics: true, ocean: true, mist: true, clouds: true, ca: true, fxaa: true, look: 0, exposure: 0.95,
   // volumetric cloud render scale (of the screen); phones default to half
-  cloudRes: matchMedia('(pointer: coarse)').matches ? 0.5 : 0.75 };
+  cloudRes: matchMedia('(pointer: coarse)').matches ? 0.5 : 0.75,
+  // cloud debug panel: bits of CLOUD_DBG that are switched off
+  cdbg: 0 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
@@ -1437,6 +1439,9 @@ function render(time, dt) {
     setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11); setU(pr, 'uUpWind', weather.mean);
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ct.hist); setI(pr, 'uHist', 4);
     setU(pr, 'uHistOn', ct.fresh || !cloudPrevVP ? 0 : 1); setU(pr, 'uPrevVP', cloudPrevVP || vp); setU(pr, 'uFrame', cloudFrame++ % 1000);
+    const cd = settings.fx.cdbg | 0;
+    setI(pr, 'uCDbg', cd);
+    if (cd & 256) setU(pr, 'uCloudF', 1);
     const f = env.flash;
     setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, f.cloud ? 190 : 165, f.z, f.I] : [0, 0, 0, 0]);
     gl.bindVertexArray(emptyVao);
@@ -1447,7 +1452,7 @@ function render(time, dt) {
     gl.useProgram(pr.p);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, ct.tex); setI(pr, 'uClouds', 2);
     setI(pr, 'uSceneDepth', 3);
-    setU(pr, 'uInvVP', ivp); setU(pr, 'uCam', eye);
+    setU(pr, 'uInvVP', ivp); setU(pr, 'uCam', eye); setU(pr, 'uBlur', cd & 1024 ? 0 : 1);
     gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.SRC_ALPHA, gl.ZERO, gl.ONE);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.BLEND);
@@ -1635,6 +1640,7 @@ function syncFx() {
   lookEl.value = settings.fx.look; expoEl.value = settings.fx.exposure;
   $('exposure-v').textContent = settings.fx.exposure.toFixed(2) + '×';
   cresEl.value = settings.fx.cloudRes; $('cloudres-v').textContent = Math.round(settings.fx.cloudRes * 100) + '%';
+  if (cdReady) syncCdbg();
 }
 syncFx();
 lookEl.addEventListener('change', () => { settings.fx.look = Number(lookEl.value); saveSettings(); });
@@ -1642,6 +1648,29 @@ expoEl.addEventListener('input', () => { settings.fx.exposure = Number(expoEl.va
 cresEl.addEventListener('input', () => { settings.fx.cloudRes = Number(cresEl.value); syncFx(); saveSettings(); });
 $('fx-all').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = true; syncFx(); saveSettings(); });
 $('fx-none').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = false; syncFx(); saveSettings(); });
+// cloud debug: switch single parts of the cloud renderer off to find what jitters
+const CLOUD_DBG = [[1, 'Frame blending (history)'], [2, 'Ray start jitter'], [4, 'Jitter changes each frame'],
+  [1024, 'Upscale blur'], [8, 'Edge detail noise'], [4096, 'Detail noise animation'], [16, 'Shape warp'],
+  [32, 'Sun light march'], [128, 'Adaptive step count'], [256, 'Weather map cross-fade'], [512, 'Wind drift'], [64, 'Cirrus']];
+const cdGrid = $('cdbg-grid');
+{
+  const l = document.createElement('label');
+  l.className = 'check'; l.innerHTML = '<input id="cdbg-on" type="checkbox"> Volumetric clouds';
+  cdGrid.appendChild(l);
+  l.firstChild.addEventListener('change', e => { settings.fx.clouds = e.target.checked; syncFx(); saveSettings(); });
+}
+for (const [b, label] of CLOUD_DBG) {
+  const l = document.createElement('label');
+  l.className = 'check'; l.innerHTML = `<input id="cdbg-${b}" type="checkbox"> ${label}`;
+  cdGrid.appendChild(l);
+  l.firstChild.addEventListener('change', e => { settings.fx.cdbg = e.target.checked ? settings.fx.cdbg & ~b : settings.fx.cdbg | b; saveSettings(); });
+}
+function syncCdbg() {
+  $('cdbg-on').checked = !!settings.fx.clouds;
+  for (const [b] of CLOUD_DBG) $('cdbg-' + b).checked = !(settings.fx.cdbg & b);
+}
+var cdReady = true; syncCdbg();
+$('cdbg-reset').addEventListener('click', () => { settings.fx.cdbg = 0; settings.fx.clouds = true; syncFx(); saveSettings(); });
 
 function setPlaying(on) {
   playing = on;
@@ -1817,7 +1846,7 @@ function frameBody(now) {
       env.zenith = add(env.zenith, 0.5); env.horizon = add(env.horizon, 0.7);
     }
   }
-  cloudWind[0] -= weather.mean[0] * CLOUD_ADV * 16 * dt; cloudWind[1] -= weather.mean[1] * CLOUD_ADV * 16 * dt;
+  if (!(settings.fx.cdbg & 512)) { cloudWind[0] -= weather.mean[0] * CLOUD_ADV * 16 * dt; cloudWind[1] -= weather.mean[1] * CLOUD_ADV * 16 * dt; }
   const ec = Math.floor(state.pos[0] / CS) + ',' + Math.floor(state.pos[2] / CS);
   if (ec !== emitCenter) { emitCenter = ec; emitDirty = true; }
   if (emitDirty && now - emitT > 400) { emitDirty = false; emitT = now; rebuildEmitters(); }

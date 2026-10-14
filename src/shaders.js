@@ -777,6 +777,9 @@ uniform sampler2D uSceneDepth; uniform highp sampler3D uNoise3; uniform mat4 uIn
 uniform vec3 uAmbSky; uniform vec2 uCloudWind; uniform vec2 uRes;
 uniform sampler2D uCloudMap2; uniform sampler2D uCloudMap2P; uniform vec2 uUpWind; uniform vec4 uFlash;
 uniform sampler2D uHist; uniform mat4 uPrevVP; uniform float uHistOn; uniform float uFrame;
+// cloud debug panel: each set bit turns one part off (see CLOUD_DBG in main.js)
+uniform int uCDbg;
+bool cOff(int b){ return (uCDbg&b)!=0; }
 // The cloud layer runs from 150 to 430 blocks: stratus decks stay low and thin, cumulus build
 // upward with the simulated tops, thunderheads reach the ceiling and spread an anvil.
 // Density model (written after the volumetric recipe in CK42BB/procedural-clouds-threejs, MIT):
@@ -797,12 +800,13 @@ float dens(vec3 p, bool fine){
   // The warp also changes with height and the layer leans downwind higher up; with a 2D map and
   // a tall layer, cloud edges otherwise stand as vertical walls that look like streaks radiating
   // from overhead.
-  if(fine){
+  if(fine && !cOff(16)){
     vec3 wq=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0021,p.y*0.0015).xzy).rgg-vec3(0.5,0.5,0.3);
     vec3 wq2=texture(uNoise3,vec3((p.xz+uCloudWind)*0.0071+0.3,p.y*0.003).xzy).rgg-vec3(0.5,0.5,0.3);
     vec2 sh=uUpWind*(p.y-CB)*0.35;
     m=cloudMapS(p.xz+vec2(wq.x,wq2.x)*70.0+vec2(wq2.y,wq.y)*30.0+sh);
   }
+  else if(fine) m=cloudMapS(p.xz);
   else m=cloudMap(p.xz);
   float ha=(p.y-CB)/(CT-CB);
   // anvil: a thunderhead's top spreads into a wide flat sheet under the ceiling, blown downwind
@@ -837,10 +841,11 @@ float dens(vec3 p, bool fine){
     // takes on the weather map's swirls
     float cc=cov*0.72;
     d=clamp(remap(shape,1.0-cc,1.0,0.0,1.0)*1.6,0.0,1.0)*cov;
-    if(fine && d>0.0){
+    if(fine && d>0.0 && !cOff(8)){
       // edge erosion with finer noise: wispy at the base, billowy higher up
-      vec2 dn=texture(uNoise3,w*0.024+vec3(0.0,uTime*0.008,0.0)).rg;
-      float dn2=texture(uNoise3,w*0.07+vec3(uTime*0.005,0.0,0.0)).g;
+      float tA=cOff(4096)?0.0:uTime;
+      vec2 dn=texture(uNoise3,w*0.024+vec3(0.0,tA*0.008,0.0)).rg;
+      float dn2=texture(uNoise3,w*0.07+vec3(tA*0.005,0.0,0.0)).g;
       float det=mix(dn.r,dn.g,clamp(h*1.5,0.0,1.0)*cv)*0.65+dn2*0.35;
       d=remap(d,(1.0-det)*mix(0.25,0.45,cv)*0.6,1.0,0.0,1.0);
     }
@@ -871,13 +876,13 @@ void main(){
   // step count follows the length of ray inside the layer: a flat ray toward the horizon crosses
   // up to 2200 blocks and 40 fixed steps of 55 blocks skipped over small clouds, which then
   // crawled and flickered as the camera moved
-  int STEPS=int(clamp((t1-t0)/14.0,32.0,110.0));
+  int STEPS=cOff(128)?64:int(clamp((t1-t0)/14.0,32.0,110.0));
   float dt=(t1-t0)/float(STEPS);
   // the start offset is interleaved gradient noise (neighbouring pixels sample evenly spread
   // offsets, so the remaining noise is fine-grained) cycled each frame by the golden ratio; the
   // history below averages it out
   float ign=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(0.06711056,0.00583715))));
-  float t=t0+dt*fract(ign+uFrame*0.618034);
+  float t=t0+dt*(cOff(2)?0.5:fract(ign+(cOff(4)?0.0:uFrame)*0.618034));
   float tw=0.0, ww=0.0;
   float mu=dot(rd,uSunDir);
   // two-lobe Henyey-Greenstein: bright silver lining toward the sun, soft back-scatter
@@ -891,7 +896,7 @@ void main(){
     if(d>0.001){
       // light march toward the sun: six growing steps through the layer above this point
       float ls=0.0, ds=6.0; vec3 lp=p;
-      for(int j=0;j<6;j++){ lp+=uSunDir*ds; ls+=dens(lp,false)*ds; ds*=1.6; }
+      if(!cOff(32)) for(int j=0;j<6;j++){ lp+=uSunDir*ds; ls+=dens(lp,false)*ds; ds*=1.6; }
       float sigma=d*0.12;
       // Beer-Lambert with a powder term (thin, sunlit edges glow; deep insides darken) plus a
       // weaker, longer-reaching lobe standing in for light scattered many times
@@ -915,7 +920,7 @@ void main(){
     t+=dt;
   }
   // cirrus: a thin, wispy layer high above, streaked along the upper wind
-  if(rd.y>0.02 && ro.y<CI && zd>=1.0){
+  if(rd.y>0.02 && ro.y<CI && zd>=1.0 && !cOff(64)){
     float tc=(CI-ro.y)/rd.y;
     vec3 pc=ro+rd*tc;
     vec2 cuv=(pc.xz/16.0-uCloudO)/128.0;
@@ -938,7 +943,7 @@ void main(){
   // at night stars are points, so even thin cloud in front of them should all but hide them
   o=vec4(outHDR(col),T*mix(1.0,T,uNight));
   // temporal accumulation: blend with last frame's clouds reprojected to where this ray's cloud was
-  if(uHistOn>0.5){
+  if(uHistOn>0.5 && !cOff(1)){
     vec3 pw=ro+rd*(ww>1e-4 ? tw/ww : min(t1,4000.0));
     vec4 pc=uPrevVP*vec4(pw,1.0);
     if(pc.w>0.0){
@@ -958,7 +963,7 @@ void main(){
 const FS_CLOUDCOMP = `#version 300 es
 precision highp float;
 in vec2 vP; out vec4 o;
-uniform sampler2D uClouds; uniform sampler2D uSceneDepth; uniform mat4 uInvVP; uniform vec3 uCam;
+uniform sampler2D uClouds; uniform sampler2D uSceneDepth; uniform mat4 uInvVP; uniform vec3 uCam; uniform float uBlur;
 void main(){
   vec2 uv=vP*0.5+0.5;
   float zd=texture(uSceneDepth,uv).r;
@@ -968,6 +973,7 @@ void main(){
     if(hi<150.0||lo>430.0){ o=vec4(0.0,0.0,0.0,1.0); return; }
   }
   // a light 5-tap filter over the low-resolution cloud image hides what raymarch noise is left
+  if(uBlur<0.5){ o=texture(uClouds,uv); return; }
   vec2 tx=1.0/vec2(textureSize(uClouds,0));
   o=texture(uClouds,uv)*0.4+(texture(uClouds,uv+vec2(tx.x,0.0))+texture(uClouds,uv-vec2(tx.x,0.0))+texture(uClouds,uv+vec2(0.0,tx.y))+texture(uClouds,uv-vec2(0.0,tx.y)))*0.15;
 }`;
