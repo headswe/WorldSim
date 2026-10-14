@@ -1194,6 +1194,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
   setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
+  setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
   setU(pr, 'uRain', env.rain);
 }
 function invert(m) {
@@ -1281,6 +1282,8 @@ function render(time, dt) {
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, weather.map);
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_3D, weather.noise);
   gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, weather.map2);
+  gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, weather.mapPrev);
+  gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D, weather.map2Prev);
   post.beginScene();
   gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
 
@@ -1384,7 +1387,7 @@ function render(time, dt) {
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, post.copy.depth); setI(pr, 'uSceneDepth', 3);
     setU(pr, 'uRes', [W, H]); setU(pr, 'uNearFar', [NEAR, far]); setU(pr, 'uSSR', settings.fx.ssr ? 1 : 0);
     if (oceanOn) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, ocean.tex); setI(pr, 'uOcean', 9); }
-    setU(pr, 'uOceanOn', oceanOn ? 1 : 0); setU(pr, 'uOceanL', ocean.L || 96);
+    setI(pr, 'uNoise3', 7); setU(pr, 'uOceanOn', oceanOn ? 1 : 0); setU(pr, 'uOceanL', ocean.L || 96);
     gl.disable(gl.CULL_FACE);
     for (let i = visible.length - 1; i >= 0; i--) {
       const ch = visible[i];
@@ -1428,7 +1431,7 @@ function render(time, dt) {
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, post.copy.depth); setI(pr, 'uSceneDepth', 3);
     setI(pr, 'uNoise3', 7);
     setU(pr, 'uInvVP', ivp); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uRes', [ct.w, ct.h]);
-    setI(pr, 'uCloudMap2', 8); setU(pr, 'uUpWind', weather.mean);
+    setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11); setU(pr, 'uUpWind', weather.mean);
     gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, ct.hist); setI(pr, 'uHist', 4);
     setU(pr, 'uHistOn', ct.fresh || !cloudPrevVP ? 0 : 1); setU(pr, 'uPrevVP', cloudPrevVP || vp); setU(pr, 'uFrame', cloudFrame++ % 1000);
     const f = env.flash;

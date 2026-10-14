@@ -83,10 +83,15 @@ vec3 skyCol(vec3 d){
 }
 // shadow of the simulated clouds: look up the cloud map where the sun ray through p meets the cloud layer
 uniform sampler2D uCloudMap; uniform vec2 uCloudO; uniform float uCloudOn;
+// the previous simulation step's map, its origin, and how far the fade to the newer map has got
+uniform sampler2D uCloudMapP; uniform vec2 uCloudOP; uniform float uCloudF;
+vec2 cloudUV(vec2 xz){ return (xz/16.0-uCloudO)/128.0; }
+vec4 cloudMap(vec2 xz){ return mix(texture(uCloudMapP,(xz/16.0-uCloudOP)/128.0),texture(uCloudMap,cloudUV(xz)),uCloudF); }
+vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(xz/16.0-uCloudOP)/128.0+du,l),textureLod(uCloudMap,cloudUV(xz)+du,l),uCloudF); }
 float cloudShade(vec3 p){
   if(uCloudOn<0.5) return 1.0;
   vec3 q=p+uSunDir/max(uSunDir.y,0.15)*(175.0-p.y);
-  float c=texture(uCloudMap,(q.xz/16.0-uCloudO)/128.0).r;
+  float c=cloudMap(q.xz).r;
   return 1.0-0.72*smoothstep(0.15,0.75,c);
 }
 // scene passes write linear HDR; tonemapping happens in the post stack
@@ -301,6 +306,7 @@ void main(){
 const FS_WATER = `#version 300 es
 ${GLSL_COMMON}
 ${FS_LIGHTING}
+uniform highp sampler3D uNoise3;
 in vec3 vWorld; in vec3 vPos; in vec4 vLP; in float vAO; flat in uint vBlock; flat in int vN;
 uniform sampler2D uSceneColor; uniform sampler2D uSceneDepth; uniform vec2 uRes; uniform vec2 uNearFar; uniform mat4 uVP; uniform float uSSR;
 uniform sampler2D uOcean; uniform float uOceanOn; uniform float uOceanL;
@@ -472,14 +478,26 @@ void main(){
     vec2 cw=uSeaWind.xy;
     vec2 cq=vec2(dot(vWorld.xz,cw)*0.45, dot(vWorld.xz,vec2(-cw.y,cw.x))*1.1)+vec2(-uTime*0.5,uTime*0.2);
     float patchy=smoothstep(0.45,0.7,vnoise(vWorld.xz*0.17+cw*uTime*0.35))*smoothstep(0.38,0.66,vnoise(cq));
-    float cap=smoothstep(thr,thr-0.35,seaJ)*patchy;
+    float cap=smoothstep(thr+0.1,thr-0.45,seaJ)*patchy;
     // surf: lines of white water roll in and break on the beach. Depth comes in whole blocks, so
     // only the strip touching land has a depth between 0 and 1 block; over a wide 1-block shelf
     // the depth is flat, the phase came from noise alone and the whole shelf flashed with blotches
     float ph=swell*9.0+uTime*1.6+fn*1.3;
     float band=smoothstep(0.82,0.98,sin(ph))*smoothstep(0.05,0.2,swell)*(1.0-smoothstep(0.24,0.32,swell))*smoothstep(0.2,0.55,vnoise(q*1.7-vec2(uTime*0.2,0.0))+0.15);
     float shore=(1.0-smoothstep(0.0,0.18,swell))*smoothstep(0.25,0.6,vnoise(vWorld.xz*2.2-vec2(uTime*0.5,0.0))+0.25*sin(uTime*1.5+dot(vWorld.xz,vec2(0.27,0.2))));
-    foam=max(band*0.75,max(cap*0.9,shore));
+    // f is how much foam there is; what it looks like comes from a bubble pattern (cellular noise,
+    // two sizes, drifting downwind): thick foam is solid white, thinning foam breaks into lace and
+    // separate bubbles instead of fading as a flat grey sheet. Beneath it the water is milky.
+    float f=max(band*0.75,max(cap,shore));
+    vec2 fq=vWorld.xz+cw*uTime*0.6;
+    vec2 b1=texture(uNoise3,vec3(fq*0.11,uTime*0.015)).rg;
+    float b2=texture(uNoise3,vec3(fq*0.29+0.37,uTime*0.03+0.5)).g;
+    float pat=b1.g*0.55+b2*0.3+b1.r*0.15;
+    float fv=smoothstep(1.0-f,1.15-f*0.8,pat+0.2*f)*smoothstep(0.0,0.08,f);
+    // far away the bubbles are smaller than a pixel: use their average instead
+    fv=mix(fv,f*0.6,smoothstep(0.15,0.7,fpx));
+    col+=vec3(0.03,0.08,0.08)*(uAmbSky+uSunCol*0.3*sh)*f*(1.0-fv);
+    foam=fv;
   }
   if(fl>0.0){
     // white water streaks stretched along the current, stronger where the level drops
@@ -746,24 +764,24 @@ ${GLSL_COMMON}
 in vec2 vP; out vec4 o;
 uniform sampler2D uSceneDepth; uniform highp sampler3D uNoise3; uniform mat4 uInvVP;
 uniform vec3 uAmbSky; uniform vec2 uCloudWind; uniform vec2 uRes;
-uniform sampler2D uCloudMap2; uniform vec2 uUpWind; uniform vec4 uFlash;
+uniform sampler2D uCloudMap2; uniform sampler2D uCloudMap2P; uniform vec2 uUpWind; uniform vec4 uFlash;
 uniform sampler2D uHist; uniform mat4 uPrevVP; uniform float uHistOn; uniform float uFrame;
 const float CB=150.0, CT=236.0, CI=330.0;
 // map: R cover, G how high the tops reach, B rain; map2: R cirrus, G convective share
 float dens(vec3 p, bool fine){
-  vec2 uv=(p.xz/16.0-uCloudO)/128.0;
+  vec2 uv=cloudUV(p.xz);
   vec2 ee=smoothstep(vec2(0.0),vec2(0.12),uv)*smoothstep(vec2(1.0),vec2(0.88),uv);
   float edge=ee.x*ee.y;
-  vec4 m=texture(uCloudMap,uv);
+  vec4 m=cloudMap(p.xz);
   float ha=(p.y-CB)/(CT-CB);
   // anvil: a thunderhead's top spreads into a wide flat sheet under the tropopause, blown downwind
   float anv=0.0;
   if(ha>0.72){
-    vec4 mb=textureLod(uCloudMap,uv-uUpWind*0.02,2.6);
+    vec4 mb=cloudMapLod(p.xz,-uUpWind*0.02,2.6);
     anv=smoothstep(0.66,0.85,mb.g)*smoothstep(0.35,0.7,mb.r)*smoothstep(0.74,0.84,ha)*(1.0-smoothstep(0.93,1.0,ha));
   }
   if(m.r<0.02 && anv<0.01) return 0.0;
-  float cv=texture(uCloudMap2,uv).g;
+  float cv=mix(texture(uCloudMap2P,(p.xz/16.0-uCloudOP)/128.0).g,texture(uCloudMap2,uv).g,uCloudF);
   vec3 w=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
   float d=0.0;
   float top=CB+14.0+m.g*(CT-CB-14.0)*mix(0.45,1.0,cv);
@@ -778,15 +796,19 @@ float dens(vec3 p, bool fine){
     float ns=texture(uNoise3,w*vec3(0.0028,0.02,0.0028)).r;
     float shape=mix(ns*0.75+0.25,n.g*0.6+n.r*0.4,cv);
     float cov=m.r*edge*prof;
-    d=clamp((shape-(1.0-cov))/max(cov,0.08),0.0,1.0)*mix(0.55,1.0,cv);
+    // a steeper ramp from the noise threshold gives clouds defined edges instead of grey smudges
+    d=smoothstep(0.0,1.0,clamp((shape-(1.0-cov))/max(cov*0.6,0.06),0.0,1.0))*mix(0.6,1.0,cv);
   }
   if(anv>0.0){
     float na=texture(uNoise3,w*vec3(0.004,0.03,0.004)).r;
     d=max(d,clamp(anv*edge*(na*1.2-0.15),0.0,1.0)*0.7);
   }
   if(fine && d>0.0){
-    float dn=texture(uNoise3,w*0.03+vec3(0.0,uTime*0.01,0.0)).r;
-    d=max(d-(1.0-dn)*mix(0.15,0.35,cv)*(1.0-d),0.0);
+    // erode the edges with two finer octaves: wispy for stratus, billowy for cumulus
+    vec2 dn=texture(uNoise3,w*0.03+vec3(0.0,uTime*0.01,0.0)).rg;
+    float dn2=texture(uNoise3,w*0.085+vec3(uTime*0.006,0.0,0.0)).r;
+    float er=mix(dn.r,dn.g,cv*0.6)*0.7+dn2*0.3;
+    d=max(d-(1.0-er)*mix(0.2,0.4,cv)*(1.0-d),0.0);
   }
   return d*(1.0+m.b*1.5);
 }
@@ -824,14 +846,14 @@ void main(){
       // light reaching this point through the cloud above it
       float ls=0.0;
       for(int j=1;j<=4;j++){ float s=float(j*j)*3.5; ls+=dens(p+uSunDir*s,false)*(float(j)*7.0); }
-      float sigma=d*0.075;
-      float beer=exp(-ls*0.075), powder=1.0-exp(-d*2.5);
+      float sigma=d*0.1;
+      float beer=exp(-ls*0.09), powder=1.0-exp(-d*3.0);
       float h=clamp((p.y-CB)/(CT-CB),0.0,1.0);
       vec3 amb=mix(uAmbSky*0.55,uZenith*0.9+uAmbSky*0.4,h);
       // rain clouds are thick and dark underneath
-      float rb=texture(uCloudMap,(p.xz/16.0-uCloudO)/128.0).b;
+      float rb=cloudMap(p.xz).b;
       amb*=mix(1.0,0.35+0.5*h,rb);
-      vec3 S=(sunL*beer*ph*mix(1.0,powder*1.6,0.5)+amb*0.75)*sigma;
+      vec3 S=(sunL*beer*ph*mix(1.0,powder*1.8,0.5)*1.25+amb*mix(0.45,0.8,h))*sigma;
       // lightning lights the cloud around the stroke from inside
       if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*14.0*exp(-length(p-uFlash.xyz)/80.0)*sigma;
       float tr=exp(-sigma*dt);
@@ -848,7 +870,7 @@ void main(){
     vec3 pc=ro+rd*tc;
     vec2 cuv=(pc.xz/16.0-uCloudO)/128.0;
     vec2 ce=smoothstep(vec2(0.0),vec2(0.15),cuv)*smoothstep(vec2(1.0),vec2(0.85),cuv);
-    float ci=texture(uCloudMap2,cuv).r*ce.x*ce.y;
+    float ci=mix(texture(uCloudMap2P,(pc.xz/16.0-uCloudOP)/128.0).r,texture(uCloudMap2,cuv).r,uCloudF)*ce.x*ce.y;
     if(ci>0.01){
       vec2 wd=normalize(uUpWind+vec2(1e-3,0.0)), wp2=pc.xz+uCloudWind*1.7;
       vec2 sq=vec2(dot(wp2,wd),dot(wp2,vec2(-wd.y,wd.x)));
@@ -859,7 +881,7 @@ void main(){
     }
   }
   // distant cloud fades into the haze of the horizon
-  float fade=exp(-max(t0-300.0,0.0)*0.00055);
+  float fade=exp(-max(t0-400.0,0.0)*0.00038);
   vec3 hz=skyCol(rd);
   col=mix(hz*(1.0-T),col,fade);
   T=mix(1.0,T,fade*0.85+0.15);
@@ -872,8 +894,10 @@ void main(){
       vec2 puv=pc.xy/pc.w*0.5+0.5;
       if(puv.x>0.0&&puv.y>0.0&&puv.x<1.0&&puv.y<1.0){
         vec4 h=texture(uHist,puv);
+        // the reprojection follows the camera, so history stays usable while turning; only a large
+        // jump (or the edge of the screen) lets the fresh, noisier frame through
         float mv=length((puv-uv)*uRes);
-        o=mix(o,h,0.9*(1.0-smoothstep(1.0,6.0,mv))+0.0);
+        o=mix(o,h,0.92-0.45*smoothstep(8.0,60.0,mv));
       }
     }
   }

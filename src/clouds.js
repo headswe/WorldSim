@@ -25,30 +25,36 @@ function createWeather(gl) {
   const mean = [0, 0];
 
   // ---- GPU resources: the cloud map and a tiling 3D noise for the cloud shapes ----
-  const map = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, map);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
-  gl.generateMipmap(gl.TEXTURE_2D);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  // second map: R = cirrus, G = how convective the cloud is (0 stratus .. 1 cumulonimbus)
-  const map2 = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, map2);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, N, N, 0, gl.RG, gl.UNSIGNED_BYTE, px2);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  // Each map is kept twice: the last two simulation steps. The field steps four times a second and
+  // the shaders cross-fade from the older map to the newer one in between, so cloud cover changes
+  // smoothly instead of popping at every step.
+  const mkMap = (fmt, ifmt, src, mip) => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, N, N, 0, fmt, gl.UNSIGNED_BYTE, src);
+    if (mip) gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  // map: R cover, G tops, B rain; map2: R = cirrus, G = how convective the cloud is (0 stratus .. 1 cumulonimbus)
+  const maps = [mkMap(gl.RGBA, gl.RGBA8, px, true), mkMap(gl.RGBA, gl.RGBA8, px, true)];
+  const maps2 = [mkMap(gl.RG, gl.RG8, px2, false), mkMap(gl.RG, gl.RG8, px2, false)];
+  let cur = 0, lastDt = 0.25;
+  // grid origin and mean wind each map was made with
+  const mapO = [[0, 0, 0, 0], [0, 0, 0, 0]];
   const noise = gl.createTexture();
   {
-    // R: tiling value-noise fbm, G: inverted Worley (billows), both period 32
-    const S = 32, out = new Uint8Array(S * S * S * 2);
+    // R: tiling value-noise fbm, G: inverted Worley (billows), both tiling once over the texture.
+    // 64 texels across (it was 32, which looked soft and blocky up close) with one more octave
+    // of each for the small detail on cloud edges
+    const S = 64, out = new Uint8Array(S * S * S * 2);
     let seed = 9127;
     const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
     const lat = (n) => { const a = new Float32Array(n * n * n); for (let i = 0; i < a.length; i++) a[i] = rnd(); return a; };
-    const L4 = lat(4), L8 = lat(8), L16 = lat(16);
+    const L4 = lat(4), L8 = lat(8), L16 = lat(16), L32 = lat(32);
     const vn = (L, n, x, y, z) => {
       const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), fx = x - xi, fy = y - yi, fz = z - zi;
       const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy), sz = fz * fz * (3 - 2 * fz);
@@ -57,22 +63,28 @@ function createWeather(gl) {
       return l(l(l(g(xi, yi, zi), g(xi + 1, yi, zi), sx), l(g(xi, yi + 1, zi), g(xi + 1, yi + 1, zi), sx), sy),
         l(l(g(xi, yi, zi + 1), g(xi + 1, yi, zi + 1), sx), l(g(xi, yi + 1, zi + 1), g(xi + 1, yi + 1, zi + 1), sx), sy), sz);
     };
-    const FPn = 5, fp = [];
-    for (let i = 0; i < FPn ** 3; i++) fp.push([rnd(), rnd(), rnd()]);
-    for (let z = 0; z < S; z++) for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-      const i = (z * S + y) * S + x;
-      const f = vn(L4, 4, x / 8, y / 8, z / 8) * 0.55 + vn(L8, 8, x / 4, y / 4, z / 4) * 0.3 + vn(L16, 16, x / 2, y / 2, z / 2) * 0.15;
-      const cx = x / S * FPn, cy = y / S * FPn, cz = z / S * FPn;
+    const worley = (F, fp, x, y, z) => {
+      const cx = x * F, cy = y * F, cz = z * F;
       const ix = Math.floor(cx), iy = Math.floor(cy), iz = Math.floor(cz);
       let d = 9;
       for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let e = -1; e <= 1; e++) {
         const gx = ix + a, gy = iy + b, gz = iz + e;
-        const p = fp[((((gz % FPn) + FPn) % FPn) * FPn + (((gy % FPn) + FPn) % FPn)) * FPn + (((gx % FPn) + FPn) % FPn)];
-        const dd = Math.hypot(gx + p[0] - cx, gy + p[1] - cy, gz + p[2] - cz);
+        const p = fp[((((gz % F) + F) % F) * F + (((gy % F) + F) % F)) * F + (((gx % F) + F) % F)];
+        const dx = gx + p[0] - cx, dy = gy + p[1] - cy, dz = gz + p[2] - cz, dd = dx * dx + dy * dy + dz * dz;
         if (dd < d) d = dd;
       }
+      return Math.sqrt(d);
+    };
+    const pts = n => { const a = []; for (let i = 0; i < n ** 3; i++) a.push([rnd(), rnd(), rnd()]); return a; };
+    const fp5 = pts(5), fp11 = pts(11);
+    for (let z = 0; z < S; z++) for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const i = (z * S + y) * S + x;
+      const f = vn(L4, 4, x / 16, y / 16, z / 16) * 0.5 + vn(L8, 8, x / 8, y / 8, z / 8) * 0.27 +
+        vn(L16, 16, x / 4, y / 4, z / 4) * 0.15 + vn(L32, 32, x / 2, y / 2, z / 2) * 0.08;
+      const u = x / S, v = y / S, w = z / S;
+      const bill = Math.max(0, 1 - worley(5, fp5, u, v, w) * 1.1) * 0.72 + Math.max(0, 1 - worley(11, fp11, u, v, w) * 1.1) * 0.28;
       out[i * 2] = Math.round(Math.min(1, Math.max(0, (f - 0.2) / 0.6)) * 255);
-      out[i * 2 + 1] = Math.round(Math.max(0, 1 - d * 1.1) * 255);
+      out[i * 2 + 1] = Math.round(Math.min(1, bill) * 255);
     }
     gl.bindTexture(gl.TEXTURE_3D, noise);
     gl.texImage3D(gl.TEXTURE_3D, 0, gl.RG8, S, S, S, 0, gl.RG, gl.UNSIGNED_BYTE, out);
@@ -245,10 +257,12 @@ function createWeather(gl) {
       px2[n * 2] = Math.round(Math.min(1, ci[n]) * 255);
       px2[n * 2 + 1] = Math.round(cvt[n] * 255);
     }
-    gl.bindTexture(gl.TEXTURE_2D, map);
+    cur ^= 1;
+    mapO[cur] = [ox, oz, mean[0], mean[1]];
+    gl.bindTexture(gl.TEXTURE_2D, maps[cur]);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, px);
     gl.generateMipmap(gl.TEXTURE_2D);
-    gl.bindTexture(gl.TEXTURE_2D, map2);
+    gl.bindTexture(gl.TEXTURE_2D, maps2[cur]);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RG, gl.UNSIGNED_BYTE, px2);
     // thunderstorm cells: towering, thick, raining hard and convective
     cbCells = []; cbW = 0;
@@ -296,10 +310,15 @@ function createWeather(gl) {
     // over, storm strength and how readily cloud rains out
     temp: 0, humid: 1, cloudy: 1, stormMul: 1, rainMul: 1,
     envChanged() { if (pl) staticFields(); },
-    map, map2, noise, mean,
-    // the field is stepped four times a second; between steps the map slides on with the mean wind
-    // so clouds and their shadows drift smoothly instead of jumping
-    get origin() { return [ox + mean[0] * CLOUD_ADV * acc, oz + mean[1] * CLOUD_ADV * acc]; },
+    noise, mean,
+    get map() { return maps[cur]; }, get map2() { return maps2[cur]; },
+    get mapPrev() { return maps[cur ^ 1]; }, get map2Prev() { return maps2[cur ^ 1]; },
+    // the field is stepped four times a second; between steps each map slides on with the mean wind
+    // so clouds and their shadows drift smoothly, and the older map (one step further along) fades
+    // into the newer one
+    get origin() { const o = mapO[cur]; return [o[0] + o[2] * CLOUD_ADV * acc, o[1] + o[3] * CLOUD_ADV * acc]; },
+    get originPrev() { const o = mapO[cur ^ 1]; return [o[0] + o[2] * CLOUD_ADV * (acc + lastDt), o[1] + o[3] * CLOUD_ADV * (acc + lastDt)]; },
+    get blend() { return Math.min(1, acc / 0.25); },
     get ready() { return ready; },
     reset(planet, seed, x, z, season) {
       pl = planet; ready = false;
@@ -311,7 +330,7 @@ function createWeather(gl) {
       // spin the weather up so the sky is already mature when the player arrives
       simT = 0;
       for (let i = 0; i < 90; i++) step(2.5);
-      upload();
+      upload(); upload();
       ready = true; acc = 0;
     },
     setSeason(season) { seasonOff = [0, 6, 0, -8][season] || 0; if (pl) staticFields(); },
@@ -321,11 +340,11 @@ function createWeather(gl) {
       if (Math.abs(cx - ox) > N * 0.6 || Math.abs(cz - oz) > N * 0.6) {
         [ox, oz] = [cx, cz]; staticFields(); fillEquilibrium();
         for (let i = 0; i < 60; i++) step(2.5);
-        upload(); return;
+        upload(); upload(); return;
       }
       if (Math.abs(cx - ox) >= 12 || Math.abs(cz - oz) >= 12) shift(cx, cz);
       acc += dt;
-      if (acc >= 0.25) { step(acc); acc = 0; upload(); }
+      if (acc >= 0.25) { step(acc); lastDt = acc; acc = 0; upload(); }
       lightning(dt);
     },
     // the current lightning strike and its brightness right now (0 when dark)
