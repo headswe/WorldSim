@@ -91,9 +91,9 @@ function createWeather(gl) {
     return seasonOff * n * Math.min(1, Math.abs(latDeg(gj)) / 30);
   }
   function equilibrium(gi, gj) {
-    const k = cellK(gi, gj), T = pl.tmp[k] + seasonTemp(gj);
+    const k = cellK(gi, gj), T = pl.tmp[k] + seasonTemp(gj) + api.temp;
     const s = pl.L.elev[k] <= 0 || pl.ys[k] < 30;
-    return (s ? 0.82 : 0.45 + 0.35 * Math.min(1, pl.L.rain[k] / 2)) * qsat(T);
+    return (s ? 0.82 : 0.45 + 0.35 * Math.min(1, pl.L.rain[k] / 2)) * qsat(T) * api.humid;
   }
   function prevailing(gj, out) {
     const la = latDeg(gj), a = Math.abs(la), hem = la >= 0 ? 1 : -1;
@@ -123,7 +123,7 @@ function createWeather(gl) {
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const n = j * N + i, gi = ox + i, gj = oz + j, k = cellK(gi, gj);
       hgt[n] = Math.max(30, pl.ys[k]);
-      tmp[n] = pl.tmp[k] + seasonTemp(gj);
+      tmp[n] = pl.tmp[k] + seasonTemp(gj) + api.temp;
       sea[n] = pl.L.elev[k] <= 0 || pl.ys[k] < 30 ? 1 : 0;
       wet[n] = Math.min(1, pl.L.rain[k] / 2);
     }
@@ -153,7 +153,7 @@ function createWeather(gl) {
           const dz = gj - s.z, rr = (dx * dx + dz * dz) / (s.r * s.r);
           if (rr > 9) continue;
           const life = Math.sin(Math.PI * Math.min(1, s.age / s.life));
-          const e = Math.exp(-rr), str = s.s * life, hem = s.z < PHc / 2 ? 1 : -1;
+          const e = Math.exp(-rr), str = s.s * life * api.stormMul, hem = s.z < PHc / 2 ? 1 : -1;
           const tang = str * 1.6 * e / s.r;
           // counter-clockwise in the north, clockwise in the south, spiralling inward
           wu += hem * dz * tang - dx * tang * 0.35; wv += -hem * dx * tang - dz * tang * 0.35;
@@ -215,19 +215,19 @@ function createWeather(gl) {
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const n = j * N + i, T = tmp[n];
       // the sea and wet forests give vapour back to the air
-      const target = (sea[n] ? 0.85 : 0.35 + 0.4 * wet[n]) * qsat(T);
+      const target = (sea[n] ? 0.85 : 0.35 + 0.4 * wet[n]) * qsat(T) * api.humid;
       q[n] += (target - q[n]) * (sea[n] ? 0.02 : 0.006) * dt;
       // saturation at cloud level: colder aloft, lowered further where the air rises
       const turb = vnoise((ox + i - sx) * ns * 2.2, (oz + j - sz) * ns * 2.2) * 0.65 + vnoise((ox + i - sx) * ns * 6, (oz + j - sz) * ns * 6) * 0.35;
-      const qs = qsat(T - 5) * Math.exp(-lift[n] * 0.9) * (0.82 + 0.42 * turb);
+      const qs = qsat(T - 5) * Math.exp(-lift[n] * 0.9) * (0.82 + 0.42 * turb) / api.cloudy;
       if (q[n] > qs) { const d = (q[n] - qs) * Math.min(1, 0.25 * dt); q[n] -= d; c[n] += d; }
       else { const e = Math.min(c[n], (qs - q[n]) * Math.min(1, 0.2 * dt)); c[n] -= e; q[n] += e; }
       // heavy cloud rains out
-      const r = Math.max(0, c[n] - 0.22) * 0.04 * dt;
+      const r = Math.max(0, c[n] - 0.22 / Math.sqrt(api.rainMul)) * 0.04 * api.rainMul * dt;
       // what reaches the ground: thick cloud in rising air (fronts, storm cores, thunderheads) pours,
       // a quiet stratus deck only drizzles
       const heavy = Math.min(1, 0.12 + Math.max(0, lift[n]) * 1.1 + cvt[n] * tops[n] * 0.9);
-      c[n] -= r; rainOut[n] += (Math.max(0, c[n] - 0.22) * heavy - rainOut[n]) * Math.min(1, dt * 0.4);
+      c[n] -= r; rainOut[n] += (Math.max(0, c[n] - 0.22 / Math.sqrt(api.rainMul)) * heavy * api.rainMul - rainOut[n]) * Math.min(1, dt * 0.4);
       // cirrus: fed by anvils blowing off thunderheads and by storm outflow, patchy, slow to fade
       const anvil = tops[n] > 0.68 && c[n] > 0.12 ? 0.9 : 0;
       const bg = Math.max(0, vnoise((ox + i - sx * 1.7) * 0.05, (oz + j - sz * 1.7) * 0.05) - 0.62) * 1.4;
@@ -292,6 +292,10 @@ function createWeather(gl) {
 
   const api = {
     windMul: 1,
+    // environment knobs from the menu: temperature offset (°C), humidity, how readily air clouds
+    // over, storm strength and how readily cloud rains out
+    temp: 0, humid: 1, cloudy: 1, stormMul: 1, rainMul: 1,
+    envChanged() { if (pl) staticFields(); },
     map, map2, noise, mean,
     // the field is stepped four times a second; between steps the map slides on with the mean wind
     // so clouds and their shadows drift smoothly instead of jumping
@@ -355,13 +359,13 @@ function createWeather(gl) {
         let dx = gi - s.x; dx -= Math.round(dx / PWc) * PWc;
         const dz = gj - s.z, rr = (dx * dx + dz * dz) / (s.r * s.r);
         if (rr > 9) continue;
-        const life = Math.sin(Math.PI * Math.min(1, s.age / s.life)), e = Math.exp(-rr), str = s.s * life, hem = s.z < PHc / 2 ? 1 : -1;
+        const life = Math.sin(Math.PI * Math.min(1, s.age / s.life)), e = Math.exp(-rr), str = s.s * life * api.stormMul, hem = s.z < PHc / 2 ? 1 : -1;
         const tang = str * 1.6 * e / s.r;
         w[0] += hem * dz * tang - dx * tang * 0.35; w[1] += -hem * dx * tang - dz * tang * 0.35;
       }
       return w;
     },
-    storms() { return storms.map(s => ({ x: s.x, z: s.z, r: s.r, north: s.z < PHc / 2, str: s.s * Math.sin(Math.PI * Math.min(1, s.age / s.life)) })); },
+    storms() { return storms.map(s => ({ x: s.x, z: s.z, r: s.r, north: s.z < PHc / 2, str: s.s * api.stormMul * Math.sin(Math.PI * Math.min(1, s.age / s.life)) })); },
     cloudField() { return { ox, oz, N, px }; },
     coverAt(x, z) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return 0; return px[(j * N + i) * 4] / 255; },
   };

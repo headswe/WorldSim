@@ -188,6 +188,18 @@ body.touch.playing #loading { display: none; }
       </div>
     </details>
     <details>
+      <summary>Environment</summary>
+      <div class="controls">
+        <div class="row"><label for="envTemp">Temperature <output id="envTemp-v"></output></label><input id="envTemp" type="range" min="-20" max="20" step="1"></div>
+        <div class="row"><label for="envHumid">Humidity <output id="envHumid-v"></output></label><input id="envHumid" type="range" min="0.3" max="2" step="0.05"></div>
+        <div class="row"><label for="envClouds">Cloudiness <output id="envClouds-v"></output></label><input id="envClouds" type="range" min="0.5" max="1.6" step="0.05"></div>
+        <div class="row"><label for="envStorms">Storms <output id="envStorms-v"></output></label><input id="envStorms" type="range" min="0" max="3" step="0.1"></div>
+        <div class="row"><label for="envRain">Rain <output id="envRain-v"></output></label><input id="envRain" type="range" min="0" max="3" step="0.1"></div>
+        <div class="row"><label for="envFog">Haze <output id="envFog-v"></output></label><input id="envFog" type="range" min="0" max="4" step="0.1"></div>
+        <div class="seedrow"><button id="env-reset" type="button">Back to the planet's own climate</button></div>
+      </div>
+    </details>
+    <details>
       <summary>Shaders</summary>
       <div class="controls">
         <div class="row"><label for="look">Look <output>G cycles</output></label><select id="look"></select></div>

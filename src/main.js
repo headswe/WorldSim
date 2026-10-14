@@ -24,7 +24,8 @@ const HOTBAR = [
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
   caustics: true, mist: true, clouds: true, grain: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
-const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, fx: { ...FX_DEFAULTS } };
+const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
+const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
 try {
   const saved = JSON.parse(localStorage.getItem('emberwood.settings') || '{}');
   Object.assign(settings, saved);
@@ -1184,11 +1185,11 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uSunDir', env.sunDir); setU(pr, 'uSunCol', env.sunCol); setU(pr, 'uNight', env.night);
   setU(pr, 'uZenith', env.zenith); setU(pr, 'uHorizon', env.horizon);
   setU(pr, 'uCam', eye); setU(pr, 'uTime', time);
-  setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.rain));
+  setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.rain) * Math.sqrt(settings.envFog));
   setU(pr, 'uAmbSky', env.ambSky); setU(pr, 'uAmbGround', env.ambGround);
   setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind);
   setU(pr, 'uEnc', post.enc);
-  setU(pr, 'uMist', settings.fx.mist ? 1 : 0);
+  setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
   setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
@@ -1506,6 +1507,17 @@ const clock = h => { const m = Math.floor(((h % 24) + 24) % 24 * 60); return `${
 bindRange('tod', 'tod', clock, updateEnv);
 bindRange('daylen', 'daylen', v => v === 0 ? 'time stands still' : `${v} min per day`);
 bindRange('wind', 'wind', v => v === 0 ? 'dead calm' : `${v.toFixed(1)}× the simulated wind`);
+// environment: live knobs on the weather simulation (the terrain itself stays as the planet made it)
+const times = (v, lo, hi) => Math.abs(v - 1) < 0.001 ? 'as simulated' : `${v.toFixed(v < 1 ? 2 : 1)}× ${v < 1 ? lo : hi}`;
+bindRange('envTemp', 'envTemp', v => v === 0 ? 'as simulated' : `${v > 0 ? '+' : ''}${v} °C`);
+bindRange('envHumid', 'envHumid', v => times(v, 'drier', 'more humid'));
+bindRange('envClouds', 'envClouds', v => times(v, 'clearer', 'cloudier'));
+bindRange('envStorms', 'envStorms', v => v === 0 ? 'no storms' : times(v, 'calmer', 'stormier'));
+bindRange('envRain', 'envRain', v => v === 0 ? 'no rain' : times(v, 'less', 'more'));
+bindRange('envFog', 'envFog', v => v === 0 ? 'crystal clear' : times(v, 'clearer', 'hazier'));
+const ENV_IDS = ['envTemp', 'envHumid', 'envClouds', 'envStorms', 'envRain', 'envFog', 'wind'];
+function syncEnvUI() { for (const id of ENV_IDS) { const el = $(id); el.value = settings[id]; el.dispatchEvent(new Event('input')); } }
+$('env-reset').addEventListener('click', () => { Object.assign(settings, ENV_DEFAULTS, { wind: 1 }); syncEnvUI(); });
 const shadowsEl = $('shadows');
 shadowsEl.checked = settings.shadows;
 shadowsEl.addEventListener('change', () => { settings.shadows = shadowsEl.checked; saveSettings(); });
@@ -1521,7 +1533,9 @@ $('regen').addEventListener('click', () => {
 // Inside an embedded artifact the link can't carry a hash, so the code can be pasted into the menu.
 function spotCode() {
   const p = state.pos, r = v => Math.round(v * 10) / 10;
-  return `s=${settings.seed}&p=${r(p[0])},${r(p[1])},${r(p[2])}&v=${state.yaw.toFixed(2)},${state.pitch.toFixed(2)}&t=${settings.tod.toFixed(1)}&se=${settings.season}`;
+  const ev = ENV_IDS.map(k => +settings[k].toFixed(2)), dv = ENV_IDS.map(k => k === 'wind' ? 1 : ENV_DEFAULTS[k]);
+  const e = ev.some((v, i) => v !== dv[i]) ? `&e=${ev.join(',')}` : '';
+  return `s=${settings.seed}&p=${r(p[0])},${r(p[1])},${r(p[2])}&v=${state.yaw.toFixed(2)},${state.pitch.toFixed(2)}&t=${settings.tod.toFixed(1)}&se=${settings.season}${e}`;
 }
 function parseSpot(text) {
   if (!text) return null;
@@ -1535,6 +1549,7 @@ function parseSpot(text) {
     seed, pos: [((pos[0] % PLANET_W) + PLANET_W) % PLANET_W, Math.min(CH + 60, Math.max(1, pos[1])), Math.min(PLANET_H - 1, Math.max(0, pos[2]))],
     yaw: Number.isFinite(v[0]) ? v[0] : state.yaw, pitch: Number.isFinite(v[1]) ? Math.max(-1.5, Math.min(1.5, v[1])) : 0,
     tod: Number.isFinite(t) ? ((t % 24) + 24) % 24 : null, season: Number.isFinite(se) ? ((se % 4) + 4) % 4 : null,
+    env: m.e ? m.e.split(',').map(Number) : null,
   };
 }
 function shareLink() {
@@ -1543,7 +1558,13 @@ function shareLink() {
     ? location.href.split('#')[0] + '#' + code : code;
 }
 // arrive at a spot: same seed keeps the loaded world, another seed grows that planet first
+function applySpotEnv(sp) {
+  if (!sp.env) return;
+  ENV_IDS.forEach((k, i) => { const el = $(k), v = sp.env[i]; if (Number.isFinite(v)) settings[k] = Math.min(+el.max, Math.max(+el.min, v)); });
+  syncEnvUI();
+}
 function goToSpot(sp) {
+  applySpotEnv(sp);
   if (sp.tod !== null) settings.tod = sp.tod;
   if (sp.season !== null && sp.season !== settings.season) setSeason(sp.season);
   const data = { world: 2, pos: sp.pos, yaw: sp.yaw, pitch: sp.pitch, fly: true };
@@ -1751,6 +1772,8 @@ function frameBody(now) {
   simStep(dt);
   if (planet && !weather.ready && state.spawned) weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
   weather.windMul = settings.wind;
+  weather.humid = settings.envHumid; weather.cloudy = settings.envClouds; weather.stormMul = settings.envStorms; weather.rainMul = settings.envRain;
+  if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }
   weather.update(dt, state.pos[0], state.pos[2]);
   // the local wind (prevailing flow plus passing storms, scaled by the wind slider) drives the
   // foliage sway, the falling leaves and the sea state; smoothed over a few seconds
@@ -1845,6 +1868,7 @@ function start(data) {
     if (shared.seed !== settings.seed) { settings.seed = shared.seed; seedEl.value = shared.seed; saveSettings(); }
     if (shared.season !== null && shared.season !== settings.season) setSeason(shared.season);
     if (shared.tod !== null) settings.tod = shared.tod;
+    applySpotEnv(shared);
     data = { world: 2, pos: shared.pos, yaw: shared.yaw, pitch: shared.pitch, fly: true };
   }
   requestPlanet();
