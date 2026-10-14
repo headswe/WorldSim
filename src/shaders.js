@@ -15,14 +15,23 @@ vec3 seaWave(vec2 p, float t, float s, float fp, out vec3 nrm){
   vec3 off=vec3(0.0); vec3 n=vec3(0.0,1.0,0.0);
   vec2 wd=uSeaWind.xy;
   float jxx=1.0, jzz=1.0, jxz=0.0;
-  // steeper, sharper-crested waves in stronger wind
-  float Q=mix(0.5,0.85,clamp((uSeaWind.z-0.5)/1.5,0.0,1.0));
+  // Amplitudes: each train grows with the wind, but no wave gets steeper than real breaking
+  // seas (k*a <= 0.11). Waves only a few pixels long are faded out (they'd alias into shimmer).
+  float A[8]; float S=0.0;
+  for(int i=0;i<8;i++){
+    float ang=float(i)*0.7854+0.3;
+    float al=max(dot(vec2(cos(ang),sin(ang)),wd),0.0);
+    float k=6.2831/Lw[i];
+    A[i]=min((0.05+0.55*al*al)*0.03*Lw[i]*pow(uSeaWind.z,1.4),0.11/k)*s*(1.0-smoothstep(Lw[i]*0.12,Lw[i]*0.4,fp));
+    S+=k*A[i];
+  }
+  // sharper crests in stronger wind, but the summed steepness stays below 0.8 so the surface never
+  // loops over itself (that drew long white ribbons in a gale)
+  float Q=min(mix(0.5,0.85,clamp((uSeaWind.z-0.5)/1.5,0.0,1.0)),0.8/max(S,1e-3));
   for(int i=0;i<8;i++){
     float ang=float(i)*0.7854+0.3;
     vec2 D=vec2(cos(ang),sin(ang));
-    float al=max(dot(D,wd),0.0);
-    // waves only a few pixels long are faded out, otherwise they alias into shimmer far away
-    float a=(0.05+0.55*al*al)*0.03*Lw[i]*pow(uSeaWind.z,1.4)*s*(1.0-smoothstep(Lw[i]*0.12,Lw[i]*0.4,fp));
+    float a=A[i];
     float k=6.2831/Lw[i], c=sqrt(9.8/k)*0.55, f=k*dot(D,p)-k*c*t;
     float cf=cos(f), sf=sin(f), qk=Q*a*k*sf;
     off.xz+=Q*a*D*cf; off.y+=a*sf;
@@ -374,7 +383,7 @@ void main(){
     sl*=(swell*0.8+0.2)*(1.0-smoothstep(0.3,1.5,fpx));
     N=normalize(vec3(sn.x-sl.x*sn.y,sn.y,sn.z-sl.y*sn.y));
     seaJ+=(jf-1.0)*swell;
-    crest=off.y/max(0.9*swell*pow(uSeaWind.z,1.4),0.05);
+    crest=off.y/max(0.9*swell*min(pow(uSeaWind.z,1.4),1.6),0.05);
   }
   // raindrops ring the surface
   if(uRain>0.02){
@@ -392,6 +401,11 @@ void main(){
     N=normalize(N+vec3(rn.x,0.0,rn.y)*0.35);
   }
   vec3 V=normalize(wp-uCam);
+  // a steep wave face seen at a grazing angle can tilt the normal away from the camera; that
+  // pushed the fresnel to a full mirror and the reflection down into the seabed (white blades and
+  // sandy smears), so keep the normal facing the viewer
+  float nv=dot(-V,N);
+  if(nv<0.03) N=normalize(N-V*(0.03-nv));
   float fres=0.03+0.97*pow(1.0-max(dot(-V,N),0.0),5.0);
   float sh=shadowF(vLP)*cloudShade(wp);
   // refraction with depth-based absorption
@@ -410,6 +424,7 @@ void main(){
   vec3 under=mix(tint,refr,absorb);
   // screen-space reflections, sky as fallback
   vec3 R=reflect(V,N);
+  R.y=abs(R.y);
   vec3 refl=skyCol(R);
   if(uSSR>0.5){
     vec3 p=wp; float stp=0.4;
@@ -448,16 +463,20 @@ void main(){
     float gale=clamp((uSeaWind.z-0.7)/1.3,0.0,1.0);
     // where the surface is squeezed toward folding the crest breaks; the threshold rises with the
     // wind so a breeze only whitens the sharpest crests and a gale whitens most of them
-    float thr=0.35+0.45*gale;
-    float cap=smoothstep(thr,thr-0.3,seaJ)*smoothstep(0.25,0.6,vnoise(vWorld.xz*1.3+vec2(uTime*0.4,uTime*0.25)));
+    float thr=0.3+0.35*gale;
+    // a crest line runs across the wind and its folding is a long thin dip in the Jacobian, which
+    // drew white ribbons; real whitecaps break in short pieces along a crest, so the mask varies
+    // fast across the wind (cutting each crest into dashes) and slowly along it, inside larger
+    // patches where the sea happens to be breaking
+    vec2 cw=uSeaWind.xy;
+    vec2 cq=vec2(dot(vWorld.xz,cw)*0.45, dot(vWorld.xz,vec2(-cw.y,cw.x))*1.1)+vec2(-uTime*0.5,uTime*0.2);
+    float patchy=smoothstep(0.45,0.7,vnoise(vWorld.xz*0.17+cw*uTime*0.35))*smoothstep(0.38,0.66,vnoise(cq));
+    float cap=smoothstep(thr,thr-0.35,seaJ)*patchy;
     // surf: lines of white water roll in over the shallows and break on the beach
     float ph=swell*9.0+uTime*1.6+fn*1.3;
     float band=smoothstep(0.82,0.98,sin(ph))*smoothstep(0.05,0.2,swell)*(1.0-smoothstep(0.3,0.75,swell))*smoothstep(0.2,0.55,vnoise(q*1.7-vec2(uTime*0.2,0.0))+0.15);
     float shore=(1.0-smoothstep(0.0,0.18,swell))*smoothstep(0.25,0.6,vnoise(vWorld.xz*2.2-vec2(uTime*0.5,0.0))+0.25*sin(uTime*1.5+dot(vWorld.xz,vec2(0.27,0.2))));
-    // in a gale the wind tears the foam into long streaks lying along the wind
-    vec2 wd=uSeaWind.xy, sq=vec2(dot(vWorld.xz,wd)*0.12-uTime*0.6, dot(vWorld.xz,vec2(-wd.y,wd.x))*1.6);
-    float streak=smoothstep(0.62,0.85,vnoise(sq))*gale*smoothstep(0.6,1.0,swell)*0.55;
-    foam=max(max(band*0.75,streak),max(cap*0.9,shore));
+    foam=max(band*0.75,max(cap*0.9,shore));
   }
   if(fl>0.0){
     // white water streaks stretched along the current, stronger where the level drops
