@@ -22,7 +22,7 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, mist: true, clouds: true, grain: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
+  caustics: true, ocean: true, mist: true, clouds: true, grain: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
@@ -82,6 +82,7 @@ const progs = {
   bolt: program(VS_BOLT, FS_BOLT),
 };
 const post = createPost(gl, program, setU, setI);
+const ocean = createOcean(gl, program, setU, setI, post.hasFloat);
 function setU(prog, name, v) {
   const l = prog.u[name];
   if (l === undefined || l === null) return;
@@ -1218,6 +1219,8 @@ let prevVP = null, focus = 12;
 function render(time, dt) {
   resize();
   post.resize(W, H);
+  const oceanOn = ocean.ok && settings.fx.ocean;
+  if (oceanOn) { ocean.update(time, env.seaWind); gl.viewport(0, 0, W, H); }
   const eye = eyePos(), fwd = camDir();
   const fov = 70 * Math.PI / 180, aspect = W / H;
   const far = settings.rd * CS * 1.5 + 64;
@@ -1380,6 +1383,8 @@ function render(time, dt) {
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, post.copy.color); setI(pr, 'uSceneColor', 2);
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, post.copy.depth); setI(pr, 'uSceneDepth', 3);
     setU(pr, 'uRes', [W, H]); setU(pr, 'uNearFar', [NEAR, far]); setU(pr, 'uSSR', settings.fx.ssr ? 1 : 0);
+    if (oceanOn) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, ocean.tex); setI(pr, 'uOcean', 9); }
+    setU(pr, 'uOceanOn', oceanOn ? 1 : 0); setU(pr, 'uOceanL', ocean.L || 96);
     gl.disable(gl.CULL_FACE);
     for (let i = visible.length - 1; i >= 0; i--) {
       const ch = visible[i];
@@ -1607,7 +1612,7 @@ syncSeason();
 seasonVis = settings.season;
 
 const FX_LABELS = [['bloom', 'Bloom'], ['rays', 'God rays'], ['ssao', 'Ambient occlusion'], ['dof', 'Depth of field'],
-  ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'],
+  ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'], ['ocean', 'Ocean ripples (FFT)'],
   ['mist', 'Valley mist'], ['clouds', 'Volumetric clouds'], ['grain', 'Film grain'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
 const fxGrid = $('fx-grid');
 for (const [k, label] of FX_LABELS) {
@@ -1886,6 +1891,6 @@ function restoreAt(data) {
     if (ch && ch.state === 'ready') { state.pos = keepPos.slice(); state.spawned = true; state.restoring = false; clearInterval(restoreTick); }
   }, 100);
 }
-window.__emberwood = { setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
+window.__emberwood = { setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
 if (hot && hot.ready) hot.ready(start); else start(hot && hot.data ? hot.data : {});
 })();

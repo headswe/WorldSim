@@ -294,6 +294,7 @@ ${GLSL_COMMON}
 ${FS_LIGHTING}
 in vec3 vWorld; in vec3 vPos; in vec4 vLP; in float vAO; flat in uint vBlock; flat in int vN;
 uniform sampler2D uSceneColor; uniform sampler2D uSceneDepth; uniform vec2 uRes; uniform vec2 uNearFar; uniform mat4 uVP; uniform float uSSR;
+uniform sampler2D uOcean; uniform float uOceanOn; uniform float uOceanL;
 out vec4 o;
 float linD(float d){ float z=d*2.0-1.0; return 2.0*uNearFar.x*uNearFar.y/(uNearFar.y+uNearFar.x-z*(uNearFar.y-uNearFar.x)); }
 float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
@@ -304,6 +305,27 @@ float waveH(vec2 q){
   float t=uTime;
   return sin(q.x*1.3+t*1.1)*0.05+sin(q.x*3.1+q.y*1.7+t*2.1)*0.03+cos(q.y*1.1+t*0.9)*0.05+cos(q.y*2.7-q.x*1.9+t*1.7)*0.03
         +vnoise(q*2.5+vec2(t*0.6,t*0.4))*0.04+vnoise(q*6.0-vec2(t*0.9,-t*0.5))*0.015;
+}
+// Fallback sea chop for GPUs without float render targets: a few octaves of sharp-crested
+// ridges (a folded sine, 1-|sin|, blended toward |cos| and raised to a power so crests peak and
+// troughs flatten), each octave turned and running with the wind, smaller and less peaked.
+float chopRidge(vec2 p, float peak){
+  vec2 r=1.0-abs(sin(p)), t=abs(cos(p));
+  r=mix(r,t,r*0.5);
+  return pow(r.x*r.y,peak);
+}
+float seaChop(vec2 p, float t){
+  vec2 wd=normalize(uSeaWind.xy+vec2(1e-4,0.0));
+  mat2 face=mat2(wd.x,wd.y,-wd.y,wd.x);
+  p=face*p;
+  float h=0.0, f=0.42, a=0.22, peak=0.55;
+  for(int i=0;i<4;i++){
+    float sp=sqrt(9.81/f)*0.35;
+    h+=(chopRidge(p*f+vec2(t*sp*f,0.0),peak)+chopRidge(p*f*vec2(0.9,1.1)+vec2(t*sp*f*0.8,1.7),peak))*a;
+    p=mat2(0.8,0.6,-0.6,0.8)*p+vec2(3.1,-1.3);
+    f*=1.85; a*=0.42; peak=mix(peak,0.25,0.35);
+  }
+  return h*uSeaWind.z;
 }
 void main(){
   vec3 wp=vPos;
@@ -336,9 +358,22 @@ void main(){
   float crest=0.0, swell=clamp(vAO,0.0,1.0);
   if(sea){
     vec3 sn; vec3 off=seaWave(vWorld.xz,uTime,swell,fpx,sn);
-    // chop scales with the wind: glassy in a calm, rough and streaky in a gale
-    float ch=(0.15+0.55*uSeaWind.z)*(1.0-smoothstep(0.08,0.6,fpx));
-    N=normalize(vec3(sn.x+N.x*ch,sn.y,sn.z+N.z*ch));
+    // short chop on top of the swells: an FFT ocean patch where the GPU can render floats (two
+    // scales so the tiling doesn't show), analytic sharp-crested ridges otherwise; both build
+    // with the wind. Its folding adds to the swells' for whitecaps.
+    vec2 sl; float jf=1.0;
+    if(uOceanOn>0.5){
+      vec2 p1=vWorld.xz/uOceanL, p2=mat2(0.8,-0.6,0.6,0.8)*vWorld.xz/(uOceanL*0.37)+0.31;
+      vec4 o1=texture(uOcean,p1), o2=texture(uOcean,p2);
+      sl=o1.xy+o2.xy*0.45;
+      jf=min(o1.z,1.0-(1.0-o2.z)*0.5);
+    } else {
+      float ce=0.08, c0=seaChop(vWorld.xz,uTime);
+      sl=vec2(seaChop(vWorld.xz+vec2(ce,0.0),uTime)-c0,seaChop(vWorld.xz+vec2(0.0,ce),uTime)-c0)/ce;
+    }
+    sl*=(swell*0.8+0.2)*(1.0-smoothstep(0.3,1.5,fpx));
+    N=normalize(vec3(sn.x-sl.x*sn.y,sn.y,sn.z-sl.y*sn.y));
+    seaJ+=(jf-1.0)*swell;
     crest=off.y/max(0.9*swell*pow(uSeaWind.z,1.4),0.05);
   }
   // raindrops ring the surface
