@@ -82,7 +82,7 @@ vec3 skyCol(vec3 d){
   return c;
 }
 // shadow of the simulated clouds: look up the cloud map where the sun ray through p meets the cloud layer
-uniform sampler2D uCloudMap; uniform vec2 uCloudO; uniform float uCloudOn;
+uniform sampler2D uCloudMap; uniform vec2 uCloudO; uniform float uCloudOn; uniform float uCloudSim;
 // the previous simulation step's map, its origin, and how far the fade to the newer map has got
 uniform sampler2D uCloudMapP; uniform vec2 uCloudOP; uniform float uCloudF;
 vec2 cloudUV(vec2 xz){ return (xz/16.0-uCloudO)/128.0; }
@@ -115,6 +115,8 @@ vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(x
 uniform sampler2D uCloud2D; uniform vec2 uCloudWind; uniform float uCloudMean;
 const float CLY=420.0;
 float cloudCover(vec2 xz){
+  // test switch: an even, fair-weather cover everywhere instead of the simulated weather
+  if(uCloudSim<0.5) return 0.42;
   vec2 uv=cloudUV(xz);
   vec2 ee=smoothstep(vec2(0.0),vec2(0.2),uv)*smoothstep(vec2(1.0),vec2(0.8),uv);
   float m=cloudMapS(xz).r;
@@ -147,6 +149,7 @@ vec2 cloudThickL(vec2 xz, float cov, float foot){
     textureLod(uCloud2D,w*(1.0/330.0)+vec2(0.71,0.53),max(0.0,l-log2(330.0))),cov);
 }
 float cloudCoverL(vec2 xz){
+  if(uCloudSim<0.5) return 0.42;
   vec2 uv=cloudUV(xz);
   vec2 ee=smoothstep(vec2(0.0),vec2(0.2),uv)*smoothstep(vec2(1.0),vec2(0.8),uv);
   float m=cloudMapLod(xz,vec2(0.0),0.0).r;
@@ -699,7 +702,7 @@ vec4 skyClouds(vec3 d){
   sunL*=mix(1.0,0.3,uNight);
   vec3 amb0=uZenith*0.65+uHorizon*0.6;
   amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.85);
-  float rain=cloudMapLod(uCam.xz+d.xz*(tb+60.0),vec2(0.0),1.0).b;
+  float rain=cloudMapLod(uCam.xz+d.xz*(tb+60.0),vec2(0.0),1.0).b*uCloudSim;
   sunL*=1.0-0.7*rain;
   vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0;
   for(int i=0;i<96;i++){

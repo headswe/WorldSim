@@ -22,7 +22,7 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, ocean: true, mist: true, clouds: true,
+  caustics: true, ocean: true, mist: true, clouds: true, cloudSim: true,
   // volumetric cloud render scale (of the screen); phones default to lower
   cloudQ: matchMedia('(pointer: coarse)').matches ? 1 : 2, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
@@ -1168,7 +1168,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
-  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
+  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0); setU(pr, 'uCloudSim', settings.fx.cloudSim ? 1 : 0);
   setI(pr, 'uCloud2D', 12); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uCloudMean', cloudMean);
   setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
   setU(pr, 'uRain', env.rain);
@@ -1565,7 +1565,7 @@ seasonVis = settings.season;
 
 const FX_LABELS = [['bloom', 'Bloom'], ['rays', 'God rays'], ['ssao', 'Ambient occlusion'], ['dof', 'Depth of field'],
   ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'], ['ocean', 'Ocean ripples (FFT)'],
-  ['mist', 'Valley mist'], ['clouds', 'Clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
+  ['mist', 'Valley mist'], ['clouds', 'Clouds'], ['cloudSim', 'Weather-driven clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
 const fxGrid = $('fx-grid');
 for (const [k, label] of FX_LABELS) {
   const l = document.createElement('label');
