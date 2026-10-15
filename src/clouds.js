@@ -16,7 +16,7 @@ function createWeather(gl) {
   let q = new Float32Array(NN), c = new Float32Array(NN), q2 = new Float32Array(NN), c2 = new Float32Array(NN);
   const u = new Float32Array(NN), v = new Float32Array(NN), lift = new Float32Array(NN), tops = new Float32Array(NN);
   const hgt = new Float32Array(NN), tmp = new Float32Array(NN), sea = new Uint8Array(NN), wet = new Float32Array(NN);
-  const rainOut = new Float32Array(NN), cvt = new Float32Array(NN), ciSrc = new Float32Array(NN);
+  const rainOut = new Float32Array(NN), cvt = new Float32Array(NN), ciSrc = new Float32Array(NN), shield = new Float32Array(NN);
   let ci = new Float32Array(NN), ci2 = new Float32Array(NN);
   const px = new Uint8Array(NN * 4), px2 = new Uint8Array(NN * 2);
   // lightning: candidate thunderstorm cells and the strike currently flashing
@@ -210,19 +210,23 @@ function createWeather(gl) {
       prevailing(oz + j, pw);
       for (let i = 0; i < N; i++) {
         const n = j * N + i, gi = ox + i + 0.5, gj = oz + j + 0.5;
-        let wu = pw[0], wv = pw[1], up = 0, cs = 0;
+        let wu = pw[0], wv = pw[1], up = 0, cs = 0, sh = 0;
         for (const s of near) {
           let dx = gi - s.x; dx -= Math.round(dx / PWc) * PWc;
           const dz = gj - s.z, rr = (dx * dx + dz * dz) / (s.r * s.r);
           if (rr > 9) continue;
           const life = Math.sin(Math.PI * Math.min(1, s.age / s.life));
           const e = Math.exp(-rr), str = s.s * life * api.stormMul, hem = s.z < PHc / 2 ? 1 : -1;
-          const tang = str * 1.6 * e / s.r;
+          const tang = str * 0.8 * e / s.r;
           // counter-clockwise in the north, clockwise in the south, spiralling inward
           wu += hem * dz * tang - dx * tang * 0.35; wv += -hem * dx * tang - dz * tang * 0.35;
-          up += str * e * 0.9;
+          // broad lift under the whole system, so it reads as one solid overcast shield rather than
+          // thin spiral arms with clear moats wound up by the vortex
+          up += str * Math.exp(-rr * 0.3) * 0.9;
           // high cloud streams out ahead of and around the storm
           cs += str * Math.exp(-rr * 0.22) * 0.55;
+          // the storm's cloud shield: one broad overcast with soft edges over the whole system
+          sh = Math.max(sh, Math.min(1, str * 1.2) * Math.exp(-rr * 0.18));
         }
         wu *= api.windMul; wv *= api.windMul;
         u[n] = wu; v[n] = wv;
@@ -234,7 +238,7 @@ function createWeather(gl) {
         tops[n] = Math.min(1, 0.18 + Math.max(0, up) * 0.45 + conv * 1.3 + Math.max(0, oro) * 0.3);
         // convective share: hot land and storm cores bubble up, broad gentle lift stays layered
         cvt[n] = Math.min(1, conv * 2.4 + Math.max(0, up - 0.3) * 1.1 + Math.max(0, oro - 0.2) * 0.5 + (sea[n] ? 0 : 0.15));
-        ciSrc[n] = Math.min(0.9, cs);
+        ciSrc[n] = Math.min(0.9, cs); shield[n] = sh;
         if (Math.abs(i - N / 2) < 4 && Math.abs(j - N / 2) < 4) { mu += wu; mv += wv; }
       }
     }
@@ -300,7 +304,7 @@ function createWeather(gl) {
   }
   function upload() {
     for (let n = 0; n < NN; n++) {
-      const cov = Math.min(1, c[n] * 2.6);
+      const cov = Math.max(Math.min(1, c[n] * 2.6), shield[n]);
       px[n * 4] = Math.round(Math.min(1, Math.sqrt(cov)) * 255);
       px[n * 4 + 1] = Math.round(tops[n] * 255);
       px[n * 4 + 2] = Math.round(Math.min(1, rainOut[n] * 4) * 255);
@@ -432,7 +436,7 @@ function createWeather(gl) {
         const dz = gj - s.z, rr = (dx * dx + dz * dz) / (s.r * s.r);
         if (rr > 9) continue;
         const life = Math.sin(Math.PI * Math.min(1, s.age / s.life)), e = Math.exp(-rr), str = s.s * life * api.stormMul, hem = s.z < PHc / 2 ? 1 : -1;
-        const tang = str * 1.6 * e / s.r;
+        const tang = str * 0.8 * e / s.r;
         w[0] += hem * dz * tang - dx * tang * 0.35; w[1] += -hem * dx * tang - dz * tang * 0.35;
       }
       return w;

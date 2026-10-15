@@ -127,6 +127,8 @@ vec2 cloudShape(vec4 A, vec4 B, vec4 C, float cov){
   float base=A.r*0.4+B.g*0.6;
   float c=clamp(cov*1.15,0.0,1.0);
   float h=clamp((base-(1.0-c))/max(c,0.08),0.0,1.0);
+  // near full cover (storm cores, fronts) the gaps close into one solid, lumpy deck
+  h=mix(h,0.5+0.5*base,smoothstep(0.75,1.0,cov));
   float det=C.g*0.7+C.a*0.3;
   return vec2(clamp((h-(1.0-det)*0.22)/0.78,0.0,1.0),h);
 }
@@ -640,7 +642,7 @@ vec3 starField(vec3 d){
   col+=vec3(0.55,0.6,0.8)*band*smoothstep(0.25,0.85,cl)*0.07;
   return col;
 }
-uniform vec4 uFlash; uniform float uPixAng; uniform highp sampler3D uNoise3;
+uniform vec4 uFlash; uniform float uPixAng; uniform highp sampler3D uNoise3; uniform float uCloudQ;
 // ---- clouds ----
 // Each cloud is a solid shape: a flat base at CB and a lumpy dome above it whose height at xz is a
 // height field (cTop) built from the simulated cover and a drifting 2D noise. A view ray is traced
@@ -665,7 +667,7 @@ float cTop(vec2 xz, float foot, bool smoothMap){
   // clear of the soft-edge band.
   float hb=cloudThickL(xz,cov,max(foot,70.0)).y;
   float ht=pow(max(hb,0.0),0.8)*0.85+0.04;
-  return sh>0.03 ? ht*sqrt(smoothstep(0.03,0.3,sh))-0.012 : (sh-0.03)*4.0-0.012;
+  return sh>0.03 ? ht*pow(smoothstep(0.03,0.45,sh),0.7)-0.012 : (sh-0.03)*4.0-0.012;
 }
 vec4 skyClouds(vec3 d){
   if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
@@ -673,7 +675,10 @@ vec4 skyClouds(vec3 d){
   // horizon (where a ray climbs slowly through it) they don't slide with the camera, and every
   // lookup is filtered for the larger of the pixel and the gap between steps, so detail smaller
   // than that gap can't slip between steps and pop in and out.
-  const float NSL=48.0, DS=CHT/NSL;
+  // quality: Low/Medium/High/Ultra sets how many slices the trace and how many samples the
+  // volume take; everything stays full resolution and deterministic at every level
+  int nsl=uCloudQ<0.5?24:uCloudQ<1.5?36:uCloudQ<2.5?48:64, nv=uCloudQ<0.5?8:uCloudQ<1.5?12:uCloudQ<2.5?18:28;
+  float NSL=float(nsl), DS=CHT/NSL;
   float tb=(CB-uCam.y)/d.y;
   vec3 pb=uCam+d*tb;
   float stp=DS/d.y;
@@ -682,12 +687,24 @@ vec4 skyClouds(vec3 d){
   vec3 hp=pb, pmin=pb; float gmin=max(gPrev,0.0);
   if(!under){
     vec3 pPrev=pb;
-    for(int i=0;i<48;i++){
+    for(int i=0;i<64;i++){
+      if(i>=nsl) break;
       float t=(CB+(float(i)+0.5)*DS-uCam.y)/d.y;
       if(t>tb+6000.0) break;
       vec3 p=uCam+d*t;
       float g=(p.y-CB)/CHT-cTop(p.xz,max(t*uPixAng,stp*0.5),false);
-      if(g<0.0){ hp=mix(pPrev,p,gPrev/(gPrev-g)); hit=true; break; }
+      if(g<0.0){
+        // refine the crossing with two more false-position steps, so the hit point does not
+        // carry the slice spacing as faint terraces on steep cloud sides
+        vec3 a0=pPrev, a1=p; float g0=gPrev, g1=g;
+        for(int k=0;k<2;k++){
+          vec3 q=mix(a0,a1,g0/(g0-g1));
+          float tq=length(q-uCam);
+          float gq=(q.y-CB)/CHT-cTop(q.xz,max(tq*uPixAng,stp*0.5),false);
+          if(gq<0.0){ a1=q; g1=gq; } else { a0=q; g0=gq; }
+        }
+        hp=mix(a0,a1,g0/(g0-g1)); hit=true; break;
+      }
       if(g<gmin){ gmin=g; pmin=p; }
       gPrev=g; pPrev=p;
     }
@@ -699,7 +716,7 @@ vec4 skyClouds(vec3 d){
   if(!hit && gmin>0.05) return vec4(0.0);
   vec3 sp=hit ? hp : pmin;
   float t0=length(sp-uCam);
-  float L=clamp(t0*0.005,6.0,40.0);
+  float L=clamp(t0*0.005,6.0,40.0)*sqrt(18.0/float(nv));
   float ts=max(t0-L*(hit?3.0:6.0),tb);
   float mu=dot(d,uSunDir);
   const float g1=0.6, g2=-0.2;
@@ -708,8 +725,11 @@ vec4 skyClouds(vec3 d){
   vec3 amb0=uZenith*0.8+uHorizon*0.6;
   amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.7);
   float rain=cloudMapLod(sp.xz,vec2(0.0),1.0).b;
+  // raining cloud is dense and dark: little sun gets through a storm deck
+  sunL*=1.0-0.75*rain;
   vec3 col=vec3(0.0); float T=1.0;
-  for(int i=0;i<18;i++){
+  for(int i=0;i<28;i++){
+    if(i>=nv) break;
     float t=ts+(float(i)+0.5)*L;
     vec3 p=uCam+d*t;
     float foot=max(t*uPixAng,L*0.4);
@@ -731,13 +751,17 @@ vec4 skyClouds(vec3 d){
       float gq=(lp.y-CB)/CHT-cTop(lp.xz,foot+ds,false);
       ls+=clamp(-gq/0.3,0.0,1.0)*ds*0.8; ds*=2.4;
     }
-    float sigma=den*0.06;
-    float beer=exp(-ls*0.06)+0.3*exp(-ls*0.015);
+    // the whole column above, out to the cloud top along the sun: deep inside a thick cloud or
+    // a storm deck the base is in its own shade, not just behind the first hundred metres
+    float above=max(top*CHT-(p.y-CB),0.0);
+    ls=max(ls,above/max(uSunDir.y,0.25)*0.55);
+    float sigma=den*0.06*(1.0+1.5*rain);
+    float beer=exp(-ls*0.06)+0.3*exp(-ls*0.015)*exp(-above*0.012);
     float powder=1.0-exp(-den*6.0);
     float sun=beer*mix(1.0,powder,0.5)*2.2;
     float h=clamp((p.y-CB)/CHT,0.0,1.0);
-    vec3 amb=amb0*mix(0.42,1.2,h)*(1.0-0.5*rain);
-    vec3 S=(sunL*(sun*(ph*1.5+0.12)+0.2*exp(-ls*0.01))+amb)*sigma;
+    vec3 amb=amb0*mix(0.42,1.2,h)*(1.0-0.6*rain)*mix(1.0,0.5,smoothstep(20.0,180.0,above));
+    vec3 S=(sunL*(sun*(mix(ph*1.5,0.3,smoothstep(30.0,160.0,above))+0.12)+0.2*exp(-ls*0.01))+amb)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*L);
     col+=T*(S-S*tr)/max(sigma,1e-5);
@@ -747,6 +771,8 @@ vec4 skyClouds(vec3 d){
   // a thick cloud the short run didn't get through is closed off with its own mean colour
   float a=1.0-T;
   if(hit && a>0.05){ col/=a; a=mix(a,1.0,smoothstep(0.5,0.95,a)); col*=a; }
+  // storm and rain cloud is grey from below
+  col*=mix(1.0,0.32,rain);
   // distant cloud sinks into the haze of the horizon
   float f=exp(-max(t0-1400.0,0.0)*0.0007)*smoothstep(0.04,0.17,d.y);
   col*=f; a*=f;
