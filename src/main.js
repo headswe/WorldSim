@@ -1248,6 +1248,7 @@ function setCommon(pr, eye, time) {
   setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0); setU(pr, 'uCloudSim', settings.fx.cloudSim ? 1 : 0);
   setI(pr, 'uCloud2D', 12); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uCloudMean', cloudMean);
   setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
+  setI(pr, 'uCloudBase', 13); setI(pr, 'uCloudDetail', 14); setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11);
   setU(pr, 'uRain', env.rain);
 }
 function invert(m) {
@@ -1339,6 +1340,8 @@ function render(time, dt) {
   gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, weather.mapPrev);
   gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D, weather.map2Prev);
   gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, weather.tex2);
+  gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_3D, weather.cloudBase);
+  gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_3D, weather.cloudDetail);
   post.beginScene();
   gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
 

@@ -41,7 +41,7 @@ function createWeather(gl) {
   };
   // map: R cover, G tops, B rain; map2: R = cirrus, G = how convective the cloud is (0 stratus .. 1 cumulonimbus)
   const maps = [mkMap(gl.RGBA, gl.RGBA8, px, true), mkMap(gl.RGBA, gl.RGBA8, px, true)];
-  const maps2 = [mkMap(gl.RG, gl.RG8, px2, false), mkMap(gl.RG, gl.RG8, px2, false)];
+  const maps2 = [mkMap(gl.RG, gl.RG8, px2, true), mkMap(gl.RG, gl.RG8, px2, true)];
   let cur = 0, lastDt = 0.25;
   // grid origin and mean wind each map was made with
   const mapO = [[0, 0, 0, 0], [0, 0, 0, 0]];
@@ -320,6 +320,7 @@ function createWeather(gl) {
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.bindTexture(gl.TEXTURE_2D, maps2[cur]);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RG, gl.UNSIGNED_BYTE, px2);
+    gl.generateMipmap(gl.TEXTURE_2D);
     // thunderstorm cells: towering, thick, raining hard and convective
     cbCells = []; cbW = 0;
     for (let n = 0; n < NN; n++) {
@@ -360,13 +361,81 @@ function createWeather(gl) {
     staticFields();
   }
 
+
+  // ---- 3D cloud shape noise (since v65): a 128³ Perlin-Worley base (R) with three Worley fbm
+  // octaves (GBA), and a 64³ Worley detail texture, baked on the GPU once at start. Both tile.
+  const bakeCloudNoise = () => {
+    const VSN = '#version 300 es\nvoid main(){ vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }';
+    const FSN = `#version 300 es
+precision highp float;
+uniform float uZ, uSize; uniform int uKind;
+out vec4 o;
+vec3 hash33(vec3 p){ p=fract(p*vec3(0.1031,0.1030,0.0973)); p+=dot(p,p.yxz+33.33); return fract((p.xxy+p.yxx)*p.zyx); }
+float worley(vec3 p, float per){
+  vec3 id=floor(p), f=fract(p); float md=1.0;
+  for(int z=-1;z<=1;z++) for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++){
+    vec3 of=vec3(x,y,z); vec3 r=of+hash33(mod(id+of,per))-f; md=min(md,dot(r,r));
+  }
+  return 1.0-sqrt(md);
+}
+float wfbm(vec3 p, float f){ return worley(p*f,f)*0.625+worley(p*f*2.0,f*2.0)*0.25+worley(p*f*4.0,f*4.0)*0.125; }
+float gr(vec3 i, vec3 f, vec3 of, float per){ vec3 g=normalize(hash33(mod(i+of,per)+0.5)*2.0-1.0+1e-4); return dot(g,f-of); }
+float perlin(vec3 p, float per){
+  vec3 i=floor(p), f=fract(p), u=f*f*f*(f*(f*6.0-15.0)+10.0);
+  return mix(mix(mix(gr(i,f,vec3(0,0,0),per),gr(i,f,vec3(1,0,0),per),u.x),mix(gr(i,f,vec3(0,1,0),per),gr(i,f,vec3(1,1,0),per),u.x),u.y),
+             mix(mix(gr(i,f,vec3(0,0,1),per),gr(i,f,vec3(1,0,1),per),u.x),mix(gr(i,f,vec3(0,1,1),per),gr(i,f,vec3(1,1,1),per),u.x),u.y),u.z);
+}
+float pfbm(vec3 p, float f){ float s=0.0, a=1.0, n=0.0; for(int i=0;i<5;i++){ s+=perlin(p*f,f)*a; n+=a; a*=0.5; f*=2.0; } return s/n*1.4; }
+void main(){
+  vec3 p=vec3(gl_FragCoord.xy/uSize,(uZ+0.5)/uSize);
+  if(uKind==0){
+    float g=wfbm(p,4.0), b=wfbm(p,8.0), a=wfbm(p,16.0);
+    float pn=abs(pfbm(p,4.0));
+    o=vec4(clamp(g+pn*(1.0-g),0.0,1.0),g,b,a);
+  } else o=vec4(wfbm(p,2.0),wfbm(p,4.0),wfbm(p,8.0),1.0);
+}`;
+    const pr = gl.createProgram();
+    for (const [t, src] of [[gl.VERTEX_SHADER, VSN], [gl.FRAGMENT_SHADER, FSN]]) {
+      const sh = gl.createShader(t); gl.shaderSource(sh, src); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error('cloud noise: ' + gl.getShaderInfoLog(sh));
+      gl.attachShader(pr, sh);
+    }
+    gl.linkProgram(pr);
+    const vao = gl.createVertexArray(), fb = gl.createFramebuffer();
+    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT);
+    gl.useProgram(pr); gl.bindVertexArray(vao); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+    const bake = (S, kind) => {
+      const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, t);
+      gl.texStorage3D(gl.TEXTURE_3D, Math.log2(S) + 1, gl.RGBA8, S, S, S);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.REPEAT);
+      gl.viewport(0, 0, S, S);
+      gl.uniform1f(gl.getUniformLocation(pr, 'uSize'), S); gl.uniform1i(gl.getUniformLocation(pr, 'uKind'), kind);
+      const uZ = gl.getUniformLocation(pr, 'uZ');
+      for (let z = 0; z < S; z++) {
+        gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, t, 0, z);
+        gl.uniform1f(uZ, z); gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      gl.generateMipmap(gl.TEXTURE_3D);
+      return t;
+    };
+    const base = bake(128, 0), detail = bake(64, 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb); gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+    gl.bindVertexArray(null); gl.enable(gl.DEPTH_TEST);
+    gl.deleteFramebuffer(fb); gl.deleteProgram(pr);
+    return { base, detail };
+  };
+  const cloudNoise = bakeCloudNoise();
+
   const api = {
     windMul: 1,
     // environment knobs from the menu: temperature offset (°C), humidity, how readily air clouds
     // over, storm strength and how readily cloud rains out
     temp: 0, humid: 1, cloudy: 1, stormMul: 1, rainMul: 1,
     envChanged() { if (pl) staticFields(); },
-    noise, mean, tex2,
+    noise, mean, tex2, cloudBase: cloudNoise.base, cloudDetail: cloudNoise.detail,
     get meanCover() { return meanCover; },
     get map() { return maps[cur]; }, get map2() { return maps2[cur]; },
     get mapPrev() { return maps[cur ^ 1]; }, get map2Prev() { return maps2[cur ^ 1]; },

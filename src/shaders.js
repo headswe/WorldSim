@@ -134,13 +134,8 @@ vec4 bsplL(sampler2D s, vec2 uv){
 vec4 cloudMapS(vec2 xz){ return mix(bspl(uCloudMapP,(xz/16.0-uCloudOP)/128.0),bspl(uCloudMap,cloudUV(xz)),uCloudF); }
 vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(xz/16.0-uCloudOP)/128.0+du,l),textureLod(uCloudMap,cloudUV(xz)+du,l),uCloudF); }
 // ---- sky cloud layer ----
-// Clouds are a single layer at CLY, evaluated where each view ray (or sun ray) meets it: thickness
-// comes from the simulated cover and a tiling 2D noise that drifts with the wind. There is no
-// raymarch, no per-pixel random offset and no blending with earlier frames, so the result is a
-// smooth function of the camera and time and cannot shimmer or crawl while moving. The noise is
-// mipmapped, so distant cloud is filtered instead of aliasing.
+// uCloud2D: tiling 2D noise (cirrus); uCloudWind: how far the wind has carried the clouds
 uniform sampler2D uCloud2D; uniform vec2 uCloudWind; uniform float uCloudMean;
-const float CLY=420.0;
 // How much of the sky is cloud at xz. The weather sim only steers the amount, smoothly over a
 // few hundred blocks: fair weather keeps separate puffs (the noise makes the shapes), wetter air
 // packs them closer, and only where it really rains do they merge into a deck. Feeding the sim's
@@ -154,40 +149,73 @@ float cloudCover(vec2 xz){
   float cov=0.28+0.36*smoothstep(0.05,0.85,sim);
   return max(cov,smoothstep(0.3,0.85,m.b*e)*0.7);
 }
-// cloud thickness 0..1 at a point of the layer for a given cover (no branches, so texture
-// filtering stays well defined at cloud edges)
-// x: with the small billows on the edges, y: the broad body (smooth, used for shading)
-vec2 cloudShape(vec4 A, vec4 B, vec4 C, float cov){
-  float base=A.r*0.4+B.g*0.6;
-  float c=clamp(cov*1.15,0.0,1.0);
-  float h=clamp((base-(1.0-c))/max(c,0.08),0.0,1.0);
-  // near full cover (storm cores, fronts) the gaps close into one solid, lumpy deck
-  h=mix(h,0.5+0.5*base,smoothstep(0.75,1.0,cov));
-  float det=C.g*0.7+C.a*0.3;
-  return vec2(clamp((h-(1.0-det)*0.22)/0.78,0.0,1.0),h);
+// cloud thickness used to come from 2D noise here; since v65 the clouds are a 3D Nubis-style
+// volume (cDen below) and the terrain's cloud shadows read the same density.
+// ---- volumetric cloud shapes (after Schneider's Nubis, Horizon Zero Dawn; written from the talks) ----
+// The weather never draws a cloud. It says how likely cloud is (coverage) and which kind (type:
+// stratus .. cumulonimbus, each with its own height profile); a tiling 3D Perlin-Worley noise makes
+// the individual clouds, and coverage only moves the threshold on that noise. Low coverage leaves
+// separate puffs, more coverage grows and joins them. Tried and tuned in the Cloud Lab page.
+uniform highp sampler3D uCloudBase; uniform highp sampler3D uCloudDetail;
+uniform sampler2D uCloudMap2; uniform sampler2D uCloudMap2P;
+const float CB=420.0, CHT=1500.0, CBT=3600.0, CDT=420.0;
+float cRemap(float v,float l,float h,float a,float b){ return a+(v-l)*(b-a)/(h-l); }
+// type 0..1 -> where the column rises (x..y) and falls (z..w), in fractions of CHT
+vec4 cProfile(float t){
+  const vec4 st=vec4(0.0,0.015,0.04,0.075), cu=vec4(0.0,0.035,0.11,0.21), cg=vec4(0.0,0.05,0.3,0.5), cb=vec4(0.0,0.05,0.82,1.0);
+  t*=3.0; return t<1.0?mix(st,cu,t):t<2.0?mix(cu,cg,t-1.0):mix(cg,cb,t-2.0);
 }
-vec2 cloudThick2(vec2 xz, float cov){
-  vec2 w=xz+uCloudWind;
-  return cloudShape(texture(uCloud2D,w*(1.0/3200.0)),texture(uCloud2D,w*(1.0/950.0)+vec2(0.37,0.11)),
-    texture(uCloud2D,w*(1.0/330.0)+vec2(0.71,0.53)),cov);
+// cloud type from the sim: gentle widespread lift (low cvt) gives stratus sheets, convective air
+// cumulus, and convective air with high tops towers into cumulonimbus. Fair weather when the sim is off.
+float cloudType(vec2 xz){
+  if(uCloudSim<0.5) return 0.36;
+  vec2 uv=cloudUV(xz);
+  float e=smoothstep(0.0,0.2,uv.x)*smoothstep(1.0,0.8,uv.x)*smoothstep(0.0,0.2,uv.y)*smoothstep(1.0,0.8,uv.y);
+  // blurred like the cover, so cloud heights change smoothly instead of in steps from cell to cell
+  vec4 m=cloudMapLod(xz,vec2(0.0),3.0);
+  float cvt=mix(textureLod(uCloudMap2P,(xz/16.0-uCloudOP)/128.0,3.0).g,textureLod(uCloudMap2,uv,3.0).g,uCloudF);
+  float t=mix(0.14,0.38,smoothstep(0.15,0.55,cvt))+0.6*smoothstep(0.45,0.9,m.g)*smoothstep(0.35,0.75,cvt);
+  return mix(0.36,clamp(t,0.0,1.0),e);
 }
-// the same with the mip level chosen from foot (world size of one pixel or sample), for use
-// inside loops where automatic texture derivatives are not defined
-vec2 cloudThickL(vec2 xz, float cov, float foot){
-  vec2 w=xz+uCloudWind;
-  float l=log2(max(foot,1e-3)*256.0);
-  return cloudShape(textureLod(uCloud2D,w*(1.0/3200.0),max(0.0,l-log2(3200.0))),
-    textureLod(uCloud2D,w*(1.0/950.0)+vec2(0.37,0.11),max(0.0,l-log2(950.0))),
-    textureLod(uCloud2D,w*(1.0/330.0)+vec2(0.71,0.53),max(0.0,l-log2(330.0))),cov);
+// density 0..1 at p; full adds the detail erosion of the edges. hT: height within this cloud
+// type's column (0 base .. 1 top), for the sky light.
+float cDen(vec3 p, float foot, bool full, out float hT){
+  hT=0.0;
+  float hf=(p.y-CB)/CHT;
+  if(hf<0.0||hf>1.0) return 0.0;
+  float cov=cloudCover(p.xz), typ=cloudType(p.xz);
+  vec4 pr=cProfile(typ);
+  float g=smoothstep(pr.x,pr.y,hf)*(1.0-smoothstep(pr.z,pr.w,hf));
+  hT=clamp(hf/pr.w,0.0,1.0);
+  if(g<=0.0) return 0.0;
+  vec3 q=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
+  vec4 b=textureLod(uCloudBase,q/CBT,max(0.0,log2(foot*128.0/CBT)));
+  float lf=b.g*0.625+b.b*0.25+b.a*0.125;
+  // the remapped noise only spans about 0.6..0.83; stretch it to 0..1 so coverage is roughly
+  // the share of sky that is cloud
+  float base=clamp((cRemap(b.r,lf-1.0,1.0,0.0,1.0)-0.6)/0.23,0.0,1.0)*g;
+  // anvils: a cumulonimbus top spreads out, but only where the storm itself is
+  float ca=mix(cov,pow(cov,cRemap(clamp(hf,0.62,0.85),0.62,0.85,1.0,0.3)),smoothstep(0.8,1.0,typ)*smoothstep(0.35,0.6,cov));
+  float c=clamp(cRemap(base,1.0-ca,1.0,0.0,1.0),0.0,1.0)*ca;
+  if(full && c>0.0){
+    vec3 dn=textureLod(uCloudDetail,q/CDT+vec3(0.0,uTime*0.002,0.0),max(0.0,log2(foot*64.0/CDT))).rgb;
+    float df=dn.r*0.625+dn.g*0.25+dn.b*0.125;
+    // wispy near the base, billowy higher up
+    c=clamp(cRemap(c,mix(df,1.0-df,clamp(hT*3.0,0.0,1.0))*0.38,1.0,0.0,1.0),0.0,1.0);
+  }
+  return c;
 }
-float cloudCoverL(vec2 xz){ return cloudCover(xz); }
-float cloudThick(vec2 xz, float cov){ return cloudThick2(xz,cov).x; }
-// how much sunlight reaches p past the cloud layer
+// how much sunlight reaches p past the clouds: two looks at the smooth cloud body along the sun ray
 float cloudShade(vec3 p){
-  if(uCloudOn<0.5) return 1.0;
-  vec3 q=p+uSunDir*(CLY-p.y)/max(uSunDir.y,0.12);
-  float h=cloudThick(q.xz,cloudCover(q.xz));
-  return 1.0-0.6*smoothstep(0.0,0.5,h);
+  if(uCloudOn<0.5 || p.y>=CB) return 1.0;
+  float sy=max(uSunDir.y,0.12), od=0.0, hT;
+  for(int k=0;k<2;k++){
+    float y=CB+CHT*(k==0?0.06:0.2);
+    vec3 q=p+uSunDir*(y-p.y)/sy;
+    od+=cDen(q,120.0,false,hT)*(k==0?200.0:400.0);
+  }
+  // forward scattering lets a lot of light through, so shadows are softer than the cloud is opaque
+  return mix(0.35,1.0,exp(-od*0.012));
 }
 // scene passes write linear HDR; tonemapping happens in the post stack
 vec3 outHDR(vec3 c){ return max(c,vec3(0.0))*uEnc; }
@@ -710,45 +738,12 @@ uniform vec4 uFlash; uniform float uPixAng; uniform highp sampler3D uNoise3; uni
 // small to be sampled reliably is blurred instead of popping. No random offsets, no lower
 // resolution buffer and no blending with earlier frames: each frame is the same smooth function of
 // camera and time, which is what keeps clouds still on fast machines.
-const float CB=420.0, CHT=380.0;
-// density at p, 0..1; top gets the height of this column's cloud top. full adds the detailed
-// outline and 3D billows; without it, a smooth body for the light march.
-float cDen(vec3 p, float foot, bool full, out float top){
-  top=CB;
-  float cov=cloudCoverL(p.xz);
-  // the column's height comes from a blurred copy of the field, so towers grow from broad bodies
-  // and a narrow peak in the noise cannot rise into a fin
-  float hb=cloudThickL(p.xz,cov,max(foot,70.0)).y;
-  if(hb<=0.0) return 0.0;
-  // even small clouds are puffs, not flat lenses that look like dark strips edge-on
-  top=CB+40.0+(CHT-40.0)*pow(hb,1.1);
-  float v=(p.y-CB)/(top-CB);
-  if(v<0.0||v>1.0) return 0.0;
-  // flat bases, rounded tops: the higher up, the thicker the column must be to still be cloud
-  float d=(full?cloudThickL(p.xz,cov,foot).x*0.6+hb*0.4:hb)-v*v*0.75-0.04;
-  if(full && d>-0.35){
-    // 3D billows and wisps drifting with the wind, so the sides are lumpy and soft, not walls
-    vec3 w=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
-    float l=log2(max(foot,1e-3)*64.0);
-    vec2 n=textureLod(uNoise3,w*(1.0/210.0),max(0.0,l-log2(210.0))).rg;
-    float n2=textureLod(uNoise3,w*(1.0/62.0)+0.31,max(0.0,l-log2(62.0))).g;
-    d-=(1.0-mix(n.r,n.g,0.6))*0.32+(1.0-n2)*0.13*(1.0-v*0.5);
-    // small cauliflower billows that only eat into the outer shell, where the cloud is thin
-    if(d>-0.12 && d<0.3){
-      float n3=textureLod(uNoise3,w*(1.0/19.0)+0.67,max(0.0,l-log2(19.0))).g;
-      d-=(1.0-n3)*0.06*(1.0-smoothstep(0.0,0.3,d));
-    }
-  }
-  // a soft shell: density builds up over the outer part of the cloud, so edges are see-through
-  return smoothstep(0.0,0.4,d)*smoothstep(0.0,0.08,v);
-}
 float hgP(float c, float g){ float g2=g*g; return (1.0-g2)/pow(1.0+g2-2.0*g*c,1.5)*0.0796; }
 // High cirrus: thin streaky ice cloud on one plane far above the cumulus, as much as the weather
 // sim's cirrus field says (anvils blowing off, storm outflow), a light veil in fair weather. The
 // idea of a separate cirrus plane is after Mirai (MIT, bambosan); this is our own code. One
 // filtered lookup per pixel, so it cannot shimmer.
-uniform sampler2D uCloudMap2; uniform sampler2D uCloudMap2P;
-const float CIH=1500.0;
+const float CIH=2600.0;
 vec4 skyCirrus(vec3 d){
   if(uCloudOn<0.5 || d.y<0.02 || uCam.y>=CIH) return vec4(0.0);
   float t=(CIH-uCam.y)/d.y;
@@ -777,53 +772,52 @@ vec4 skyCirrus(vec3 d){
 }
 vec4 skyClouds(vec3 d){
   if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
-  // quality: Low/Medium/High/Ultra sets the slice count and light steps; always full resolution
-  int nsl=uCloudQ<0.5?32:uCloudQ<1.5?48:uCloudQ<2.5?64:96, nl=uCloudQ<0.5?3:uCloudQ<2.5?4:5;
-  float DY=CHT/float(nsl), stp=DY/d.y;
+  // quality: Low/Medium/High/Ultra sets the slice count and light steps; always full resolution.
+  // Slices sit at fixed heights, closer together near the base where most cloud is, so samples
+  // never slide through the clouds as the camera moves.
+  int nsl=uCloudQ<0.5?32:uCloudQ<1.5?48:uCloudQ<2.5?64:96, nl=uCloudQ<0.5?4:uCloudQ<2.5?5:6;
   float tb=(CB-uCam.y)/d.y;
   if(tb>9000.0) return vec4(0.0);
   float mu=dot(d,uSunDir);
-  const float g1=0.6, g2=-0.2;
-  float ph=mix((1.0-g1*g1)/pow(1.0+g1*g1-2.0*g1*mu,1.5),(1.0-g2*g2)/pow(1.0+g2*g2-2.0*g2*mu,1.5),0.3)*0.25;
   vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9);
   // moonlight is faint: clouds at night are grey shapes against the sky, not lit-up white
   sunL*=mix(1.0,0.3,uNight);
   // skylight from above is blue; shaded sides take on the sky colour, not a flat grey
   vec3 amb0=uZenith*0.55+uHorizon*0.3;
-  vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0;
+  vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0, n=float(nsl);
   for(int i=0;i<96;i++){
     if(i>=nsl) break;
-    float t=(CB+(float(i)+0.5)*DY-uCam.y)/d.y;
+    float y0=CHT*pow(float(i)/n,1.4), y1=CHT*pow(float(i+1)/n,1.4);
+    float t=(CB+0.5*(y0+y1)-uCam.y)/d.y, stp=(y1-y0)/d.y;
     if(t>tb+9000.0) break;
     vec3 p=uCam+d*t;
-    float foot=max(t*uPixAng,stp*0.5), top;
-    float den=cDen(p,foot,true,top);
-    if(den<=0.002) continue;
-    // light: growing steps toward the sun through the smooth body, plus the rest of the column
-    // above, so the base of a thick cloud or a storm deck is in its own shade
-    float ls=0.0, ds=12.0, tq; vec3 lp=p;
-    for(int j=0;j<5;j++){
+    float foot=max(t*uPixAng,stp*0.5), hT;
+    float den=cDen(p,foot,false,hT);
+    if(den<=0.0) continue;
+    den=cDen(p,foot,true,hT);
+    if(den<=0.003) continue;
+    // light: growing steps toward the sun through the smooth body, then one far look, so the base
+    // of a tall cloud is in its own shade
+    float ls=0.0, ds=18.0, s=0.0, hq; vec3 lp=p;
+    for(int j=0;j<6;j++){
       if(j>=nl) break;
-      lp+=uSunDir*ds; ls+=cDen(lp,foot+ds,false,tq)*ds; ds*=2.1;
+      lp+=uSunDir*ds; s+=ds; ls+=cDen(lp,foot+s*0.25,false,hq)*ds; ds*=1.65;
     }
-    float above=max(top-p.y,0.0);
-    ls=max(ls,above/max(uSunDir.y,0.25)*0.35);
+    ls+=cDen(p+uSunDir*(s+700.0),foot+300.0,false,hq)*450.0;
     // rain darkens only the cloud it falls from: sampled where this sample is, blurred so a sharp
     // rain band in the sim cannot cut a hard-edged dark sheet across the sky
     float rain=smoothstep(0.15,0.8,cloudMapLod(p.xz,vec2(0.0),3.0).b)*uCloudSim;
-    float sigma=den*0.055*(1.0+1.5*rain);
-    // multiple scattering, approximated with octaves: each one lets light through more easily and
-    // scatters it more evenly, which is what makes thick cloud glow softly all through instead of
-    // going black beyond the first few metres
+    float sigma=den*0.07*(1.0+1.5*rain), od=ls*0.07*(1.0+1.5*rain);
+    // multiple scattering as octaves (Wrenninge 2013, Hillaire 2016): each one lets light through
+    // more easily and scatters it more evenly, so thick cloud glows instead of going black
     float sun=0.0, oa=1.0, ob=1.0, oc=1.0;
     for(int k=0;k<4;k++){
-      sun+=ob*(mix(hgP(mu,0.6*oc),hgP(mu,-0.2*oc),0.3)+0.35*hgP(mu,0.9*oc))*exp(-ls*0.06*oa);
-      oa*=0.4; ob*=0.6; oc*=0.5;
+      sun+=ob*mix(hgP(mu,0.8*oc),hgP(mu,-0.3*oc),0.25)*exp(-od*oa);
+      oa*=0.4; ob*=0.55; oc*=0.55;
     }
-    float powder=1.0-exp(-den*6.0);
-    sun*=mix(1.0,powder,0.4)*11.0;
-    float h=clamp((p.y-CB)/CHT,0.0,1.0);
-    vec3 amb=amb0*mix(0.45,1.25,h)*(1.0-0.4*rain)*mix(1.0,0.8,smoothstep(20.0,180.0,above));
+    // powder: sun-facing edges that light has barely entered look darker when seen from the side
+    sun*=mix(1.0,1.0-exp(-od*2.5-den*1.5),0.6*(0.55-0.45*mu))*11.0;
+    vec3 amb=amb0*mix(0.45,1.25,hT)*(1.0-0.4*rain);
     vec3 S=(sunL*(1.0-0.7*rain)*sun+amb)*mix(1.0,0.4,rain)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*stp);
