@@ -8,13 +8,17 @@ float h1(uint x){ return float(ih(x))*(1.0/4294967295.0); }
 // builds up downwind and rises with storms without the wave phases ever jumping.
 // seaJ is the Jacobian of the horizontal displacement (Tessendorf 2001): 1 on flat water, below 1
 // where crests are squeezed together, below 0 where the surface folds over. Whitecaps form there.
+// deep is 0..1, how deep the water is under this point (0 within ~4 blocks of the sea floor, 1 past
+// ~16): only there do the long storm swells run, 30..90 blocks long and up to a few blocks high,
+// growing with the wind like a real sea (longer waves need a stronger, longer-blowing wind).
+// seaAmp is the summed amplitude, so the shader can tell how high a point sits on the waves.
 uniform vec3 uSeaWind;
-float seaJ;
-vec3 seaWave(vec2 p, float t, float s, float fp, out vec3 nrm){
+float seaJ, seaAmp;
+vec3 seaWave(vec2 p, float t, float s, float deep, float fp, out vec3 nrm){
   float Lw[8]=float[8](21.0,8.5,16.0,11.0,19.0,7.0,13.5,9.5);
   vec3 off=vec3(0.0); vec3 n=vec3(0.0,1.0,0.0);
   vec2 wd=uSeaWind.xy;
-  float jxx=1.0, jzz=1.0, jxz=0.0;
+  float jxx=1.0, jzz=1.0, jxz=0.0; seaAmp=0.0;
   // Amplitudes: each train grows with the wind, but no wave gets steeper than real breaking
   // seas (k*a <= 0.11). Waves only a few pixels long are faded out (they'd alias into shimmer).
   float A[8]; float S=0.0;
@@ -24,6 +28,17 @@ vec3 seaWave(vec2 p, float t, float s, float fp, out vec3 nrm){
     float k=6.2831/Lw[i];
     A[i]=min((0.05+0.55*al*al)*0.03*Lw[i]*pow(uSeaWind.z,1.4),0.11/k)*s*(1.0-smoothstep(Lw[i]*0.12,Lw[i]*0.4,fp));
     S+=k*A[i];
+  }
+  float BL[6]=float[6](88.0,64.0,47.0,76.0,55.0,38.0);
+  float B[6];
+  for(int i=0;i<6;i++){
+    float ang=float(i)*1.0472+0.13;
+    float al=max(dot(vec2(cos(ang),sin(ang)),wd),0.0);
+    float k=6.2831/BL[i];
+    // fully grown only when the wind is strong enough for this wavelength
+    float grow=smoothstep(BL[i]/110.0,BL[i]/110.0+0.8,uSeaWind.z);
+    B[i]=min(0.03*BL[i]*pow(al,1.5)*pow(uSeaWind.z,1.5),0.12/k)*grow*deep*(1.0-smoothstep(BL[i]*0.12,BL[i]*0.4,fp));
+    S+=k*B[i];
   }
   // sharper crests in stronger wind, but the summed steepness stays below 0.8 so the surface never
   // loops over itself (that drew long white ribbons in a gale)
@@ -37,6 +52,18 @@ vec3 seaWave(vec2 p, float t, float s, float fp, out vec3 nrm){
     off.xz+=Q*a*D*cf; off.y+=a*sf;
     n.xz-=D*k*a*cf; n.y-=Q*k*a*sf;
     jxx-=qk*D.x*D.x; jzz-=qk*D.y*D.y; jxz-=qk*D.x*D.y;
+    seaAmp+=a;
+  }
+  for(int i=0;i<6;i++){
+    float ang=float(i)*1.0472+0.13;
+    vec2 D=vec2(cos(ang),sin(ang));
+    float a=B[i];
+    float k=6.2831/BL[i], c=sqrt(9.8/k)*0.55, f=k*dot(D,p)-k*c*t+float(i)*1.7;
+    float cf=cos(f), sf=sin(f), qk=Q*a*k*sf;
+    off.xz+=Q*a*D*cf; off.y+=a*sf;
+    n.xz-=D*k*a*cf; n.y-=Q*k*a*sf;
+    jxx-=qk*D.x*D.x; jzz-=qk*D.y*D.y; jxz-=qk*D.x*D.y;
+    seaAmp+=a;
   }
   seaJ=jxx*jzz-jxz*jxz;
   nrm=normalize(n);
@@ -186,7 +213,7 @@ const VS_TERRAIN = `#version 300 es
 ${GLSL_COMMON}
 layout(location=0) in uint aData;
 uniform mat4 uVP; uniform mat4 uLightVP; uniform vec3 uOrigin; uniform float uWind;
-out vec3 vWorld; out vec3 vPos; out vec4 vLP; out float vAO; flat out uint vBlock; flat out int vN;
+out vec3 vWorld; out vec3 vPos; out vec4 vLP; out float vAO; out float vSeaD; flat out uint vBlock; flat out int vN;
 const vec3 NRM[6]=vec3[6](vec3(1,0,0),vec3(-1,0,0),vec3(0,1,0),vec3(0,-1,0),vec3(0,0,1),vec3(0,0,-1));
 vec3 windOff(vec3 p){
   return vec3(sin(uTime*1.9+p.x*0.7+p.z*0.4), sin(uTime*1.3+p.x*0.5)*0.4, cos(uTime*1.5+p.z*0.6+p.y*0.3))*0.06*uWind;
@@ -196,6 +223,9 @@ void main(){
   vec3 p=vec3(float(d&63u), float((d>>6u)&127u), float((d>>13u)&63u));
   int n=int((d>>19u)&7u); uint b=d>>24u;
   vec3 w=uOrigin+p, wv=w;
+  // open-sea surface vertices carry the full water depth as 145+depth in the block byte
+  vSeaD=0.0;
+  if(b>=145u){ vSeaD=smoothstep(4.0,16.0,float(b-145u)); b=144u; }
   // water: block byte is 64 + level*9 + dir; lower surface vertices to the water level
   if(b>=64u){
     float lv=float((b-64u)/9u);
@@ -203,7 +233,7 @@ void main(){
     if(topV) wv.y-=0.12+(8.0-lv)/8.0*0.85;
     if(n==2 && lv>7.5 && abs(w.y-31.0)<0.01){
       vec3 nn; float s=float((d>>22u)&3u)/3.0;
-      wv+=seaWave(w.xz,uTime,s,0.0,nn);
+      wv+=seaWave(w.xz,uTime,s,vSeaD,0.0,nn);
     }
   }
   if(b>=9u && b<=13u) wv+=windOff(w);
@@ -375,7 +405,7 @@ const FS_WATER = `#version 300 es
 ${GLSL_COMMON}
 ${FS_LIGHTING}
 uniform highp sampler3D uNoise3;
-in vec3 vWorld; in vec3 vPos; in vec4 vLP; in float vAO; flat in uint vBlock; flat in int vN;
+in vec3 vWorld; in vec3 vPos; in vec4 vLP; in float vAO; in float vSeaD; flat in uint vBlock; flat in int vN;
 uniform sampler2D uSceneColor; uniform sampler2D uSceneDepth; uniform vec2 uRes; uniform vec2 uNearFar; uniform mat4 uVP; uniform float uSSR;
 uniform sampler2D uOcean; uniform float uOceanOn; uniform float uOceanL;
 out vec4 o;
@@ -440,7 +470,7 @@ void main(){
   float fpx=length(fwidth(vWorld.xz));
   float crest=0.0, swell=clamp(vAO,0.0,1.0);
   if(sea){
-    vec3 sn; vec3 off=seaWave(vWorld.xz,uTime,swell,fpx,sn);
+    vec3 sn; vec3 off=seaWave(vWorld.xz,uTime,swell,vSeaD,fpx,sn);
     // short chop on top of the swells: an FFT ocean patch where the GPU can render floats (two
     // scales so the tiling doesn't show), analytic sharp-crested ridges otherwise; both build
     // with the wind. Its folding adds to the swells' for whitecaps.
@@ -458,7 +488,7 @@ void main(){
     sl*=(swell*0.8+0.2)*(1.0-smoothstep(0.3,1.5,fpx));
     N=normalize(vec3(sn.x-sl.x*sn.y,sn.y,sn.z-sl.y*sn.y));
     seaJ+=(jf-1.0)*swell;
-    crest=off.y/max(0.9*swell*min(pow(uSeaWind.z,1.4),1.6),0.05);
+    crest=off.y/max(0.9*seaAmp,0.05);
   }
   // raindrops ring the surface
   if(uRain>0.02){
@@ -492,7 +522,8 @@ void main(){
   float thick=max(zs-zw,0.0)*max(-V.y,0.15);
   // the sea knows its own depth from the mesh (0..3 blocks, 3 = deeper); that is steadier than the
   // depth buffer, which some phone GPUs read too coarsely and turn into stripes
-  if(sea) thick=swell>0.99 ? 6.0 : swell*3.0;
+  // out over deep water the bottom is lost entirely: open ocean is a dark blue, not a lagoon
+  if(sea) thick=swell>0.99 ? mix(6.0,30.0,vSeaD) : swell*3.0;
   vec3 refr=texture(uSceneColor,ruv).rgb/uEnc;
   vec3 tint=vec3(0.03,0.085,0.085)*(uAmbSky*1.4+uSunCol*0.35*sh);
   vec3 absorb=exp(-thick*vec3(1.1,0.45,0.36));

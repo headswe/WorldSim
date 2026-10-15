@@ -919,6 +919,18 @@ function mesh(vol, cx, cz) {
       }
     return m;
   }
+  // how deep the open sea is under a vertex, up to 100 blocks: storm swells only build over deep
+  // water and die away as the sea floor rises toward the coast
+  function seaDeepAt(x, z) {
+    let m = 100;
+    for (let dz = -1; dz <= 0; dz++)
+      for (let dx = -1; dx <= 0; dx++) {
+        let n = 0;
+        while (n < m && WL - n > 0 && isWater(g(x + dx, WL - n, z + dz))) n++;
+        if (n < m) m = n;
+      }
+    return m;
+  }
   gv = g;
   const S = q => SOL[g(q[0], q[1], q[2])];
   const pos = [0, 0, 0], q = [0, 0, 0], p = [0, 0, 0];
@@ -988,10 +1000,14 @@ function mesh(vol, cx, cz) {
               const cc = ord[c];
               p[d] = pl; p[u] = cu[cc]; p[v] = cv[cc];
               // sea vertices carry how deep the water is around them (0..3): the swell dies out on the shore
-              if (seaTop) ao[cc] = seaDepthAt(p[0], p[2]);
-              if (p[1] < minY) minY = p[1];
-              if (p[1] > maxY) maxY = p[1];
-              push(water, (p[0] | (p[1] << 6) | (p[2] << 13) | (nIdx << 19) | (ao[cc] << 22) | (b << 24)) >>> 0);
+              // and, in the block byte (145 + depth; water codes end at 144), how deep it is in full
+              let bb = b;
+              if (seaTop) { ao[cc] = seaDepthAt(p[0], p[2]); bb = 145 + seaDeepAt(p[0], p[2]); }
+              // storm swells lift and lower the sea surface by a few blocks
+              const pad = seaTop ? 5 : 0;
+              if (p[1] - pad < minY) minY = p[1] - pad;
+              if (p[1] + pad > maxY) maxY = p[1] + pad;
+              push(water, (p[0] | (p[1] << 6) | (p[2] << 13) | (nIdx << 19) | (ao[cc] << 22) | (bb << 24)) >>> 0);
             }
             for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) mask[n + x + y * du] = 0;
             i += w; n += w;
