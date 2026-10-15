@@ -47,9 +47,10 @@ body.playing #cross { display: block; }
 #globe-btn { padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%; line-height: 0; }
 #globe-btn:focus-visible { outline: 2px solid var(--parch); outline-offset: 3px; }
 #globe { width: 88px; height: 88px; display: block; }
-#mapview { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(12,8,5,.82); z-index: 40; }
-.mapbox { display: grid; gap: 8px; width: min(1100px, 100%); }
-#map { width: 100%; height: auto; aspect-ratio: 2 / 1; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 3px; background: #0b1a2c; }
+#mapview { position: fixed; inset: 0; display: grid; justify-items: center; align-content: start; padding: 12px; background: rgba(12,8,5,.9); z-index: 40; }
+/* the map fills the window: as wide as fits, leaving room under it for the toolbars; pinned to the top so the hover readout wrapping a line never shifts it under the pointer */
+.mapbox { display: grid; gap: 8px; width: min(100%, calc((100dvh - 150px) * 2)); }
+#map { width: 100%; height: auto; aspect-ratio: 2 / 1; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 3px; background: #0b1a2c; cursor: crosshair; }
 .mapmodes { display: flex; flex-wrap: wrap; gap: 6px; }
 .mapmodes button { font: 600 11px var(--mono); color: var(--ash); background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; cursor: pointer; }
 .mapmodes button:hover { color: var(--parch); border-color: rgba(232,116,59,.6); }
@@ -140,7 +141,7 @@ body.touch.playing #loading { display: none; }
     <canvas id="map"></canvas>
     <div class="mapmodes" id="mapmodes" role="toolbar" aria-label="Map view"></div>
     <div class="mapmodes overlays" id="mapoverlays" role="toolbar" aria-label="Map overlays"><span class="ol-label">Overlays</span></div>
-    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span><kbd>1</kbd>–<kbd>6</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span></div>
+    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span><kbd>Ctrl</kbd>+click to teleport · <kbd>1</kbd>–<kbd>6</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span></div>
   </div>
 </div>
 <div id="menu">

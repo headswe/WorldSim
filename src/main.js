@@ -568,7 +568,7 @@ function drawMap() {
     g.strokeStyle = 'rgba(232,116,59,.85)'; g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
     for (let n = 0; n < trail.length; n++) {
       const [x, z] = trail[n], px = x / 16 * S, pz = z / 16 * S;
-      if (n && Math.abs(x - trail[n - 1][0]) > PLANET_W / 2) g.moveTo(px, pz); else if (n) g.lineTo(px, pz); else g.moveTo(px, pz);
+      if (n && (Math.abs(x - trail[n - 1][0]) > 96 || Math.abs(z - trail[n - 1][1]) > 96)) g.moveTo(px, pz); else if (n) g.lineTo(px, pz); else g.moveTo(px, pz);
     }
     g.stroke();
   }
@@ -602,9 +602,31 @@ function mapHover(e) {
   $('mapinfo').textContent = `x ${i * 16 + 8}  z ${j * 16 + 8} · ${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'} · ${what} · height ${y} · ${planet.tmp[k]}°C${rain}`;
 }
 function toggleMap(on) {
-  const mv = $('mapview');
+  const mv = $('mapview'), was = mv.hidden;
   mv.hidden = on === undefined ? !mv.hidden : !on;
-  if (!mv.hidden) { initMapModes(); setMapMode(mapMode); }
+  if (!mv.hidden) {
+    initMapModes(); setMapMode(mapMode);
+    // free the mouse so the map can be pointed at and clicked
+    if (locked()) document.exitPointerLock();
+  } else if (!was && playing && !isTouch && !lockFailed && canvas.requestPointerLock) {
+    try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+  }
+}
+// Ctrl (or Cmd) + click on the map: teleport there, landing on the ground or the water surface
+function mapTeleport(e) {
+  if (!planet || !(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault(); e.stopPropagation();
+  const r = $('map').getBoundingClientRect();
+  const u = (e.clientX - r.left) / r.width, v = (e.clientY - r.top) / r.height;
+  if (u < 0 || v < 0 || u >= 1 || v >= 1) return;
+  // of the planet's copies around the wrap, the one nearest to where you are
+  let x = u * PLANET_W;
+  x += Math.round((state.pos[0] - x) / PLANET_W) * PLANET_W;
+  const z = Math.min(PLANET_H - 8, Math.max(8, v * PLANET_H));
+  boat.state.aboard = false;
+  restoreAt({ world: 2, pos: [x, CH - 4, z], yaw: state.yaw, pitch: state.pitch, fly: state.fly, ground: true });
+  toggleMap(false);
+  showToast(`Teleported to x ${Math.round(x)}  z ${Math.round(z)}`);
 }
 function initMapModes() {
   const bar = $('mapmodes');
@@ -618,6 +640,8 @@ function initMapModes() {
   }
   syncOverlayBtns();
   $('map').addEventListener('pointermove', mapHover);
+  $('map').addEventListener('pointerdown', mapTeleport);
+  $('map').addEventListener('contextmenu', e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); });
   $('map').addEventListener('pointerleave', () => { $('mapinfo').textContent = ''; });
   MAP_MODES.forEach(([name], i) => {
     const b = document.createElement('button');
@@ -1659,7 +1683,7 @@ function setPlaying(on) {
 }
 let lockFailed = false;
 $('globe-btn').addEventListener('click', () => toggleMap(true));
-$('mapview').addEventListener('click', () => toggleMap(false));
+$('mapview').addEventListener('click', e => { if (e.target === e.currentTarget) toggleMap(false); });
 $('enter').addEventListener('click', () => {
   setPlaying(true);
   if (!isTouch && canvas.requestPointerLock) {
@@ -1670,7 +1694,7 @@ $('enter').addEventListener('click', () => {
   }
 });
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement !== canvas && playing && !isTouch && !lockFailed) setPlaying(false);
+  if (document.pointerLockElement !== canvas && playing && !isTouch && !lockFailed && $('mapview').hidden) setPlaying(false);
 });
 document.addEventListener('pointerlockerror', () => { lockFailed = true; });
 
@@ -1921,7 +1945,23 @@ function restoreAt(data) {
   clearInterval(restoreTick);
   restoreTick = setInterval(() => {
     const ch = chunks.get(ckey(Math.floor(keepPos[0] / CS), Math.floor(keepPos[2] / CS)));
-    if (ch && ch.state === 'ready') { state.pos = keepPos.slice(); state.spawned = true; state.restoring = false; clearInterval(restoreTick); }
+    if (ch && ch.state === 'ready') {
+      // a teleport lands on whatever is on top there: ground, or the surface of the water
+      if (data.ground) {
+        // under the canopy rather than on it: leaves and twigs are passed through, and a trunk is stepped around
+        const tree = b => (b >= B.OAK_LOG && b <= B.LEAF_GREEN) || b === B.TWIG || isPlant(b);
+        for (let k = 0; k < 4; k++) {
+          const bx = Math.floor(keepPos[0]), bz = Math.floor(keepPos[2]);
+          let y = CH - 2, b = 0;
+          for (; y > 1; y--) { b = getBlock(bx, y, bz); if (b > 0 && !tree(b)) break; }
+          keepPos[1] = y + (isW(b) ? 0.6 : 1.02);
+          const above = getBlock(bx, y + 1, bz);
+          if (above < B.OAK_LOG || above > B.SPRUCE_LOG) break;
+          keepPos[0] += 1.5;
+        }
+      }
+      state.pos = keepPos.slice(); state.spawned = true; state.restoring = false; clearInterval(restoreTick);
+    }
   }, 100);
 }
 window.__emberwood = { heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, boat, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
