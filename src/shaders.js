@@ -658,10 +658,14 @@ float cTop(vec2 xz, float foot, bool smoothMap){
   float m=smoothMap ? mix(bsplL(uCloudMapP,(xz/16.0-uCloudOP)/128.0).r,bsplL(uCloudMap,uv).r,uCloudF) : cloudMapLod(xz,vec2(0.0),0.0).r;
   float cov=mix(uCloudMean,m*m,ee.x*ee.y);
   vec2 h=cloudThickL(xz,cov,foot);
-  float sh=h.y*0.75+h.x*0.25;
-  // a dome: steep sides, round top; small clouds stay low and wide. Below the edge the value keeps
-  // falling, so open sky is well clear of the soft-edge band.
-  return sh>0.03 ? pow(sh-0.03,0.6)*mix(0.15,0.85,smoothstep(0.1,0.7,h.y))-0.012 : (sh-0.03)*4.0-0.012;
+  float sh=h.y*0.85+h.x*0.15;
+  // The outline comes from the sharp field, the height from a blurred copy of it: a narrow peak in
+  // the noise would otherwise rise into a pointed fin. Sides round off like a dome, tops stay
+  // broad, and small clouds stay low. Below the edge the value keeps falling, so open sky is well
+  // clear of the soft-edge band.
+  float hb=cloudThickL(xz,cov,max(foot,70.0)).y;
+  float ht=pow(max(hb,0.0),0.8)*0.85+0.04;
+  return sh>0.03 ? ht*sqrt(smoothstep(0.03,0.3,sh))-0.012 : (sh-0.03)*4.0-0.012;
 }
 vec4 skyClouds(vec3 d){
   if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
@@ -700,9 +704,9 @@ vec4 skyClouds(vec3 d){
   float mu=dot(d,uSunDir);
   const float g1=0.6, g2=-0.2;
   float ph=mix((1.0-g1*g1)/pow(1.0+g1*g1-2.0*g1*mu,1.5),(1.0-g2*g2)/pow(1.0+g2*g2-2.0*g2*mu,1.5),0.3)*0.25;
-  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.25);
-  vec3 amb0=uZenith*0.75+uHorizon*0.45;
-  amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.45);
+  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.55);
+  vec3 amb0=uZenith*0.8+uHorizon*0.6;
+  amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.7);
   float rain=cloudMapLod(sp.xz,vec2(0.0),1.0).b;
   vec3 col=vec3(0.0); float T=1.0;
   for(int i=0;i<18;i++){
@@ -710,7 +714,8 @@ vec4 skyClouds(vec3 d){
     vec3 p=uCam+d*t;
     float foot=max(t*uPixAng,L*0.4);
     float g=(p.y-CB)/CHT-cTop(p.xz,foot,true);
-    float dn=clamp(-g/0.45,0.0,1.0)*smoothstep(CB,CB+14.0,p.y);
+    float top=(p.y-CB)/CHT-g;
+    float dn=clamp(-g/max(0.45*top,0.04),0.0,1.0)*smoothstep(CB,CB+14.0,p.y);
     // erosion: billowy 3D noise eats the outer part of the cloud
     vec3 w=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
     float l=log2(max(foot,1e-3)*64.0);
@@ -731,8 +736,8 @@ vec4 skyClouds(vec3 d){
     float powder=1.0-exp(-den*6.0);
     float sun=beer*mix(1.0,powder,0.5)*2.2;
     float h=clamp((p.y-CB)/CHT,0.0,1.0);
-    vec3 amb=amb0*mix(0.6,1.15,h)*(1.0-0.5*rain);
-    vec3 S=(sunL*sun*ph*1.5+amb)*sigma;
+    vec3 amb=amb0*mix(0.42,1.2,h)*(1.0-0.5*rain);
+    vec3 S=(sunL*(sun*(ph*1.5+0.12)+0.2*exp(-ls*0.01))+amb)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*L);
     col+=T*(S-S*tr)/max(sigma,1e-5);
