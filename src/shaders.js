@@ -114,13 +114,18 @@ vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(x
 // mipmapped, so distant cloud is filtered instead of aliasing.
 uniform sampler2D uCloud2D; uniform vec2 uCloudWind; uniform float uCloudMean;
 const float CLY=420.0;
+// How much of the sky is cloud at xz. The weather sim only steers the amount, smoothly over a
+// few hundred blocks: fair weather keeps separate puffs (the noise makes the shapes), wetter air
+// packs them closer, and only where it really rains do they merge into a deck. Feeding the sim's
+// cell-by-cell cover straight in merged clouds into big shapeless masses.
 float cloudCover(vec2 xz){
-  // test switch: an even, fair-weather cover everywhere instead of the simulated weather
   if(uCloudSim<0.5) return 0.42;
   vec2 uv=cloudUV(xz);
-  vec2 ee=smoothstep(vec2(0.0),vec2(0.2),uv)*smoothstep(vec2(1.0),vec2(0.8),uv);
-  float m=cloudMapS(xz).r;
-  return mix(uCloudMean,m*m,ee.x*ee.y);
+  float e=smoothstep(0.0,0.2,uv.x)*smoothstep(1.0,0.8,uv.x)*smoothstep(0.0,0.2,uv.y)*smoothstep(1.0,0.8,uv.y);
+  vec4 m=cloudMapLod(xz,vec2(0.0),3.0);
+  float sim=mix(uCloudMean,m.r*m.r,e);
+  float cov=0.28+0.36*smoothstep(0.05,0.85,sim);
+  return max(cov,smoothstep(0.3,0.85,m.b*e)*0.7);
 }
 // cloud thickness 0..1 at a point of the layer for a given cover (no branches, so texture
 // filtering stays well defined at cloud edges)
@@ -148,13 +153,7 @@ vec2 cloudThickL(vec2 xz, float cov, float foot){
     textureLod(uCloud2D,w*(1.0/950.0)+vec2(0.37,0.11),max(0.0,l-log2(950.0))),
     textureLod(uCloud2D,w*(1.0/330.0)+vec2(0.71,0.53),max(0.0,l-log2(330.0))),cov);
 }
-float cloudCoverL(vec2 xz){
-  if(uCloudSim<0.5) return 0.42;
-  vec2 uv=cloudUV(xz);
-  vec2 ee=smoothstep(vec2(0.0),vec2(0.2),uv)*smoothstep(vec2(1.0),vec2(0.8),uv);
-  float m=cloudMapLod(xz,vec2(0.0),0.0).r;
-  return mix(uCloudMean,m*m,ee.x*ee.y);
-}
+float cloudCoverL(vec2 xz){ return cloudCover(xz); }
 float cloudThick(vec2 xz, float cov){ return cloudThick2(xz,cov).x; }
 // how much sunlight reaches p past the cloud layer
 float cloudShade(vec3 p){
@@ -687,6 +686,37 @@ float cDen(vec3 p, float foot, bool full, out float top){
   return clamp(d*4.0,0.0,1.0)*smoothstep(0.0,0.08,v);
 }
 float hgP(float c, float g){ float g2=g*g; return (1.0-g2)/pow(1.0+g2-2.0*g*c,1.5)*0.0796; }
+// High cirrus: thin streaky ice cloud on one plane far above the cumulus, as much as the weather
+// sim's cirrus field says (anvils blowing off, storm outflow), a light veil in fair weather. The
+// idea of a separate cirrus plane is after Mirai (MIT, bambosan); this is our own code. One
+// filtered lookup per pixel, so it cannot shimmer.
+uniform sampler2D uCloudMap2; uniform sampler2D uCloudMap2P;
+const float CIH=1500.0;
+vec4 skyCirrus(vec3 d){
+  if(uCloudOn<0.5 || d.y<0.02 || uCam.y>=CIH) return vec4(0.0);
+  float t=(CIH-uCam.y)/d.y;
+  vec2 xz=uCam.xz+d.xz*t;
+  vec2 w=xz+uCloudWind*1.7;
+  // stretched along one direction, so it reads as wisps and mares' tails, not as blotches
+  vec2 q=vec2(dot(w,vec2(0.92,0.39)),dot(w,vec2(-0.39,0.92)));
+  float n=texture(uCloud2D,q*vec2(1.0/9000.0,1.0/2600.0)).b*0.6+texture(uCloud2D,q*vec2(1.0/3200.0,1.0/850.0)+0.3).b*0.28
+         +texture(uCloud2D,q*vec2(1.0/1200.0,1.0/380.0)+0.7).b*0.12;
+  float amt=0.3;
+  if(uCloudSim>0.5){
+    vec2 uv=cloudUV(xz);
+    float e=smoothstep(0.0,0.2,uv.x)*smoothstep(1.0,0.8,uv.x)*smoothstep(0.0,0.2,uv.y)*smoothstep(1.0,0.8,uv.y);
+    float ci=mix(texture(uCloudMap2P,(xz/16.0-uCloudOP)/128.0).r,texture(uCloudMap2,uv).r,uCloudF);
+    amt=mix(0.3,max(ci,0.15),e);
+  }
+  float dens=smoothstep(0.0,0.45,n-(0.78-0.45*amt))*0.4;
+  dens*=smoothstep(0.02,0.18,d.y)*exp(-max(t-9000.0,0.0)*0.0002);
+  if(dens<=0.001) return vec4(0.0);
+  float mu=dot(d,uSunDir);
+  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9)*mix(1.0,0.3,uNight);
+  vec3 amb=uZenith*0.7+uHorizon*0.5;
+  vec3 col=sunL*(hgP(mu,0.7)*2.5+0.25)+amb;
+  return vec4(col,dens);
+}
 vec4 skyClouds(vec3 d){
   if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
   // quality: Low/Medium/High/Ultra sets the slice count and light steps; always full resolution
@@ -702,8 +732,6 @@ vec4 skyClouds(vec3 d){
   sunL*=mix(1.0,0.3,uNight);
   vec3 amb0=uZenith*0.65+uHorizon*0.6;
   amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.85);
-  float rain=cloudMapLod(uCam.xz+d.xz*(tb+60.0),vec2(0.0),1.0).b*uCloudSim;
-  sunL*=1.0-0.7*rain;
   vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0;
   for(int i=0;i<96;i++){
     if(i>=nsl) break;
@@ -722,6 +750,9 @@ vec4 skyClouds(vec3 d){
     }
     float above=max(top-p.y,0.0);
     ls=max(ls,above/max(uSunDir.y,0.25)*0.35);
+    // rain darkens only the cloud it falls from: sampled where this sample is, blurred so a sharp
+    // rain band in the sim cannot cut a hard-edged dark sheet across the sky
+    float rain=smoothstep(0.15,0.8,cloudMapLod(p.xz,vec2(0.0),3.0).b)*uCloudSim;
     float sigma=den*0.055*(1.0+1.5*rain);
     // multiple scattering, approximated with octaves: each one lets light through more easily and
     // scatters it more evenly, which is what makes thick cloud glow softly all through instead of
@@ -735,7 +766,7 @@ vec4 skyClouds(vec3 d){
     sun*=mix(1.0,powder,0.4)*11.0;
     float h=clamp((p.y-CB)/CHT,0.0,1.0);
     vec3 amb=amb0*mix(0.7,1.3,h)*(1.0-0.4*rain)*mix(1.0,0.8,smoothstep(20.0,180.0,above));
-    vec3 S=(sunL*sun+amb)*sigma;
+    vec3 S=(sunL*(1.0-0.7*rain)*sun+amb)*mix(1.0,0.4,rain)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*stp);
     col+=T*(S-S*tr)/max(sigma,1e-5);
@@ -745,7 +776,6 @@ vec4 skyClouds(vec3 d){
   }
   float a=1.0-T;
   if(a<0.002) return vec4(0.0);
-  col*=mix(1.0,0.4,rain);
   // distant cloud sinks into the haze of the horizon
   float tc=tsum/max(wsum,1e-4);
   float f=exp(-max(tc-1800.0,0.0)*0.0005)*smoothstep(0.02,0.12,d.y);
@@ -767,6 +797,8 @@ void main(){
     float disc=smoothstep(0.99945,0.99965,ms);
     c=mix(c,vec3(0.86,0.88,0.94)*(0.75+0.35*mare)*(0.35+2.2*uNight),disc*smoothstep(-0.02,0.02,uMoonDir.y));
   }
+  vec4 ci=skyCirrus(d);
+  c=mix(c,ci.rgb,ci.a);
   vec4 cl=skyClouds(d);
   c=mix(c,cl.rgb,cl.a);
   o=vec4(outHDR(c),1.0);
