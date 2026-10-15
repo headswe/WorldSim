@@ -654,7 +654,7 @@ uniform vec4 uFlash; uniform float uPixAng; uniform highp sampler3D uNoise3; uni
 // small to be sampled reliably is blurred instead of popping. No random offsets, no lower
 // resolution buffer and no blending with earlier frames: each frame is the same smooth function of
 // camera and time, which is what keeps clouds still on fast machines.
-const float CB=420.0, CHT=260.0;
+const float CB=420.0, CHT=380.0;
 // density at p, 0..1; top gets the height of this column's cloud top. full adds the detailed
 // outline and 3D billows; without it, a smooth body for the light march.
 float cDen(vec3 p, float foot, bool full, out float top){
@@ -683,7 +683,8 @@ float cDen(vec3 p, float foot, bool full, out float top){
       d-=(1.0-n3)*0.06*(1.0-smoothstep(0.0,0.3,d));
     }
   }
-  return clamp(d*4.0,0.0,1.0)*smoothstep(0.0,0.08,v);
+  // a soft shell: density builds up over the outer part of the cloud, so edges are see-through
+  return smoothstep(0.0,0.4,d)*smoothstep(0.0,0.08,v);
 }
 float hgP(float c, float g){ float g2=g*g; return (1.0-g2)/pow(1.0+g2-2.0*g*c,1.5)*0.0796; }
 // High cirrus: thin streaky ice cloud on one plane far above the cumulus, as much as the weather
@@ -699,8 +700,9 @@ vec4 skyCirrus(vec3 d){
   vec2 w=xz+uCloudWind*1.7;
   // stretched along one direction, so it reads as wisps and mares' tails, not as blotches
   vec2 q=vec2(dot(w,vec2(0.92,0.39)),dot(w,vec2(-0.39,0.92)));
-  float n=texture(uCloud2D,q*vec2(1.0/9000.0,1.0/2600.0)).b*0.6+texture(uCloud2D,q*vec2(1.0/3200.0,1.0/850.0)+0.3).b*0.28
-         +texture(uCloud2D,q*vec2(1.0/1200.0,1.0/380.0)+0.7).b*0.12;
+  // broad soft veils: a big, gently stretched pattern decides where, finer streaks only shade it
+  float n=texture(uCloud2D,q*vec2(1.0/9000.0,1.0/3500.0),1.5).r*0.7+texture(uCloud2D,q*vec2(1.0/3000.0,1.0/1100.0)+0.3,1.0).r*0.3;
+  float st=texture(uCloud2D,q*vec2(1.0/1600.0,1.0/400.0)+0.7).b;
   float amt=0.3;
   if(uCloudSim>0.5){
     vec2 uv=cloudUV(xz);
@@ -708,7 +710,7 @@ vec4 skyCirrus(vec3 d){
     float ci=mix(texture(uCloudMap2P,(xz/16.0-uCloudOP)/128.0).r,texture(uCloudMap2,uv).r,uCloudF);
     amt=mix(0.3,max(ci,0.15),e);
   }
-  float dens=smoothstep(0.0,0.45,n-(0.78-0.45*amt))*0.4;
+  float dens=smoothstep(0.62-0.3*amt,0.95-0.2*amt,n)*mix(0.6,1.0,st)*0.4;
   dens*=smoothstep(0.02,0.18,d.y)*exp(-max(t-9000.0,0.0)*0.0002);
   if(dens<=0.001) return vec4(0.0);
   float mu=dot(d,uSunDir);
@@ -730,8 +732,8 @@ vec4 skyClouds(vec3 d){
   vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9);
   // moonlight is faint: clouds at night are grey shapes against the sky, not lit-up white
   sunL*=mix(1.0,0.3,uNight);
-  vec3 amb0=uZenith*0.65+uHorizon*0.6;
-  amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.85);
+  // skylight from above is blue; shaded sides take on the sky colour, not a flat grey
+  vec3 amb0=uZenith*0.55+uHorizon*0.3;
   vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0;
   for(int i=0;i<96;i++){
     if(i>=nsl) break;
@@ -759,13 +761,13 @@ vec4 skyClouds(vec3 d){
     // going black beyond the first few metres
     float sun=0.0, oa=1.0, ob=1.0, oc=1.0;
     for(int k=0;k<4;k++){
-      sun+=ob*mix(hgP(mu,0.6*oc),hgP(mu,-0.2*oc),0.3)*exp(-ls*0.035*oa);
+      sun+=ob*(mix(hgP(mu,0.6*oc),hgP(mu,-0.2*oc),0.3)+0.35*hgP(mu,0.9*oc))*exp(-ls*0.06*oa);
       oa*=0.4; ob*=0.6; oc*=0.5;
     }
     float powder=1.0-exp(-den*6.0);
     sun*=mix(1.0,powder,0.4)*11.0;
     float h=clamp((p.y-CB)/CHT,0.0,1.0);
-    vec3 amb=amb0*mix(0.7,1.3,h)*(1.0-0.4*rain)*mix(1.0,0.8,smoothstep(20.0,180.0,above));
+    vec3 amb=amb0*mix(0.45,1.25,h)*(1.0-0.4*rain)*mix(1.0,0.8,smoothstep(20.0,180.0,above));
     vec3 S=(sunL*(1.0-0.7*rain)*sun+amb)*mix(1.0,0.4,rain)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*stp);
