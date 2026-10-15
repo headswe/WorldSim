@@ -407,6 +407,30 @@ ${FS_LIGHTING}
 uniform highp sampler3D uNoise3;
 in vec3 vWorld; in vec3 vPos; in vec4 vLP; in float vAO; in float vSeaD; flat in uint vBlock; flat in int vN;
 uniform sampler2D uSceneColor; uniform sampler2D uSceneDepth; uniform vec2 uRes; uniform vec2 uNearFar; uniform mat4 uVP; uniform float uSSR;
+// the boat: its wake as a trail of stern positions (x, z, age s, speed m/s), newest first, and
+// where it is now (x, z, heading x, z) with its speed, for the white water around the hull
+uniform vec4 uWake[16]; uniform int uWakeN; uniform vec4 uBoat; uniform float uBoatS;
+float boatFoam(vec2 p){
+  if(uWakeN<=0) return 0.0;
+  float wk=0.0;
+  for(int i=0;i<15;i++){
+    if(i>=uWakeN-1) break;
+    vec4 a=uWake[i], c=uWake[i+1];
+    vec2 ab=c.xy-a.xy; float l2=max(dot(ab,ab),1e-4);
+    float h=clamp(dot(p-a.xy,ab)/l2,0.0,1.0);
+    float d=length(p-a.xy-ab*h), age=mix(a.z,c.z,h), sp=mix(a.w,c.w,h);
+    // churned water straight behind, and the two arms of the V spreading at the Kelvin angle
+    float core=1.0-smoothstep(0.5+age*0.35,1.2+age*0.7,d);
+    float arm=1.0-smoothstep(0.0,0.45+age*0.25,abs(d-(1.3+age*sp*0.34)));
+    wk=max(wk,(core*0.85+arm*0.55)*exp(-age*0.33)*smoothstep(0.4,2.5,sp));
+  }
+  // bow wave and the white water hugging the hull
+  vec2 q=p-uBoat.xy, F=uBoat.zw;
+  float al=dot(q,F), ac=dot(q,vec2(-F.y,F.x));
+  float e=length(vec2(al/5.2,ac/1.85));
+  float hullF=(1.0-smoothstep(0.0,0.22,abs(e-1.04)))*smoothstep(0.3,3.0,uBoatS)*(0.45+0.55*smoothstep(-2.0,4.0,al));
+  return max(wk,hullF);
+}
 uniform sampler2D uOcean; uniform float uOceanOn; uniform float uOceanL;
 out vec4 o;
 float linD(float d){ float z=d*2.0-1.0; return 2.0*uNearFar.x*uNearFar.y/(uNearFar.y+uNearFar.x-z*(uNearFar.y-uNearFar.x)); }
@@ -588,6 +612,7 @@ void main(){
     // two sizes, drifting downwind): thick foam is solid white, thinning foam breaks into lace and
     // separate bubbles instead of fading as a flat grey sheet. Beneath it the water is milky.
     float f=max(band*0.75,max(cap,shore));
+    f=max(f,boatFoam(vWorld.xz));
     vec2 fq=vWorld.xz+cw*uTime*0.6;
     vec2 b1=texture(uNoise3,vec3(fq*0.11,uTime*0.015)).rg;
     float b2=texture(uNoise3,vec3(fq*0.29+0.37,uTime*0.03+0.5)).g;

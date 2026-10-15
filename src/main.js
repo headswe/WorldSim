@@ -83,6 +83,7 @@ const progs = {
 };
 const post = createPost(gl, program, setU, setI);
 const ocean = createOcean(gl, program, setU, setI, post.hasFloat);
+const boat = createBoat(gl, program, setU);
 function setU(prog, name, v) {
   const l = prog.u[name];
   if (l === undefined || l === null) return;
@@ -1037,7 +1038,59 @@ function camDir() {
   const cp = Math.cos(state.pitch);
   return [-Math.sin(state.yaw) * cp, Math.sin(state.pitch), -Math.cos(state.yaw) * cp];
 }
-const eyePos = () => [state.pos[0], state.pos[1] + EYE, state.pos[2]];
+// aboard the boat the camera rides behind and above her, orbiting with the mouse
+const BOAT_CAM = 13;
+const eyePos = () => {
+  if (boat.state.aboard) {
+    const d = camDir(), p = boat.state.pos;
+    const e = [p[0] - d[0] * BOAT_CAM, Math.max(p[1] + 1.6, p[1] + 3.4 - d[1] * BOAT_CAM), p[2] - d[2] * BOAT_CAM];
+    // never under a passing crest
+    e[1] = Math.max(e[1], boat.seaHeight(e[0], e[2], boat.state.t || 0, env.seaWind, getBlock, isW).h + 1.2);
+    return e;
+  }
+  return [state.pos[0], state.pos[1] + EYE, state.pos[2]];
+};
+// B launches the boat on the nearest open water ahead, boards her when she is close, or steps off
+function boatInput() {
+  if (!playing) return { fwd: 0, turn: 0, boost: false };
+  let fwd = touch.mz, turn = touch.mx;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) fwd += 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) fwd -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) turn += 1;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) turn -= 1;
+  const c = v => Math.max(-1, Math.min(1, v));
+  return { fwd: c(fwd), turn: c(turn), boost: keys.has('ShiftLeft') || keys.has('ShiftRight') };
+}
+function groundTop(x, z) {
+  for (let y = 70; y > 26; y--) if (solidAt(x, y, z) && !solidAt(x, y + 1, z) && !solidAt(x, y + 2, z) && !isW(getBlock(x, y + 1, z))) return y + 1;
+  return null;
+}
+function toggleBoat() {
+  const b = boat.state;
+  if (b.aboard) {
+    // step off onto land close by, or into the water beside her
+    b.aboard = false;
+    let spot = null;
+    for (let d = 3; d <= 12 && !spot; d++) for (let k = 0; k < 24 && !spot; k++) {
+      const a = k / 24 * Math.PI * 2, x = Math.floor(b.pos[0] + Math.cos(a) * d), z = Math.floor(b.pos[2] + Math.sin(a) * d);
+      const y = groundTop(x, z);
+      if (y !== null && y < 60) spot = [x + 0.5, y, z + 0.5];
+    }
+    const { r } = boat.basis(b.yaw);
+    state.pos = spot || [b.pos[0] + r[0] * 2.8, 30.4, b.pos[2] + r[1] * 2.8];
+    state.vel = [0, 0, 0];
+    showToast(spot ? 'Ashore' : 'In the water: B by the boat to climb aboard');
+    return;
+  }
+  const board = () => { b.aboard = true; state.fly = false; state.vel = [0, 0, 0]; state.pitch = Math.min(state.pitch, -0.12); showToast('Aboard: W/S throttle, A/D helm, B to step off'); };
+  if (b.active && Math.hypot(b.pos[0] - state.pos[0], b.pos[2] - state.pos[2]) < 15) { board(); return; }
+  const fx = -Math.sin(state.yaw), fz = -Math.cos(state.yaw);
+  for (let d = 4; d <= 70; d += 2) for (const s of [0, 1, -1, 2, -2, 3, -3]) {
+    const x = state.pos[0] + fx * d - fz * s * 3, z = state.pos[2] + fz * d + fx * s * 3;
+    if (boat.fits(x, z, state.yaw, getBlock, isW)) { boat.place(x, z, state.yaw); board(); return; }
+  }
+  showToast('No open water ahead deep enough for the boat');
+}
 function breakBlock() {
   if (!target) return;
   setBlock(target.x, target.y, target.z, B.AIR);
@@ -1251,6 +1304,7 @@ function render(time, dt) {
       gl.bindVertexArray(ch.opaque.vao);
       gl.drawElements(gl.TRIANGLES, ch.opaque.count, gl.UNSIGNED_INT, 0);
     }
+    boat.drawShadow(lightVP);
     gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -1307,6 +1361,7 @@ function render(time, dt) {
     }
     stats.visible = visible.length;
   }
+  boat.draw(vp, lightVP, pr => setCommon(pr, eye, time), shadowTex, settings.shadows);
 
   // selection outline
   if (target && playing) {
@@ -1369,6 +1424,12 @@ function render(time, dt) {
     setU(pr, 'uRes', [W, H]); setU(pr, 'uNearFar', [NEAR, far]); setU(pr, 'uSSR', settings.fx.ssr ? 1 : 0);
     if (oceanOn) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, ocean.tex); setI(pr, 'uOcean', 9); }
     setI(pr, 'uNoise3', 7); setU(pr, 'uOceanOn', oceanOn ? 1 : 0); setU(pr, 'uOceanL', ocean.L || 96);
+    {
+      const wk = boat.wakeUniform(), bs = boat.state, bb = boat.basis(bs.yaw);
+      if (pr.u.uWake) gl.uniform4fv(pr.u.uWake, wk.buf);
+      if (pr.u.uWakeN) gl.uniform1i(pr.u.uWakeN, wk.n);
+      setU(pr, 'uBoat', [bs.pos[0], bs.pos[2], bb.f[0], bb.f[1]]); setU(pr, 'uBoatS', bs.active ? Math.abs(bs.speed) : 0);
+    }
     gl.disable(gl.CULL_FACE);
     for (let i = visible.length - 1; i >= 0; i--) {
       const ch = visible[i];
@@ -1633,7 +1694,9 @@ window.addEventListener('mousemove', e => {
   look(dx * 0.0024, dy * 0.0024);
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
+let lookT = 0;
 function look(dx, dy) {
+  if (dx || dy) lookT = performance.now();
   state.yaw -= dx;
   state.pitch = Math.max(-1.55, Math.min(1.55, state.pitch - dy));
 }
@@ -1652,7 +1715,8 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyG') { settings.fx.look = (settings.fx.look + 1) % LOOKS.length; syncFx(); saveSettings(); showToast(LOOKS[settings.fx.look]); }
   if (e.code === 'KeyN') setSeason(settings.season + 1, true);
   if (e.code === 'KeyT') { settings.tod = (settings.tod + (e.shiftKey ? 23 : 1)) % 24; saveSettings(); showToast(clock(settings.tod)); }
-  if (e.code === 'KeyF') { state.fly = !state.fly; state.vel[1] = 0; showToast(state.fly ? 'Flying' : 'Walking'); }
+  if (e.code === 'KeyB') toggleBoat();
+  if (e.code === 'KeyF' && !boat.state.aboard) { state.fly = !state.fly; state.vel[1] = 0; showToast(state.fly ? 'Flying' : 'Walking'); }
   if (/^Digit[1-9]$/.test(e.code)) selectSlot(Number(e.code.slice(5)) - 1);
   if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
 });
@@ -1702,6 +1766,7 @@ if (isTouch) {
   hold('t-jump', () => { touch.jump = true; }, () => { touch.jump = false; });
   hold('t-break', breakBlock);
   hold('t-place', placeBlock);
+  hold('t-boat', toggleBoat);
   hold('t-fly', () => { state.fly = !state.fly; showToast(state.fly ? 'Flying' : 'Walking'); });
   hold('t-menu', () => setPlaying(false));
 }
@@ -1770,10 +1835,21 @@ function frameBody(now) {
   const ec = Math.floor(state.pos[0] / CS) + ',' + Math.floor(state.pos[2] / CS);
   if (ec !== emitCenter) { emitCenter = ec; emitDirty = true; }
   if (emitDirty && now - emitT > 400) { emitDirty = false; emitT = now; rebuildEmitters(); }
-  if (state.spawned && playing) physics(dt);
+  // the boat moves on the same clock the sea shader uses; aboard, you go where she goes and the
+  // camera swings round behind her when you leave the mouse alone
+  if (boat.state.active && state.spawned) boat.update(dt, (now - clockStart) / 1000, boatInput(), env.seaWind, getBlock, isW);
+  if (boat.state.aboard) {
+    const p = boat.state.pos;
+    state.pos = [p[0], p[1] + 1.2, p[2]]; state.vel = [0, 0, 0];
+    if (playing && now - lookT > 1500 && Math.abs(boat.state.speed) > 1) {
+      let d = boat.state.yaw - state.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+      state.yaw += d * Math.min(1, dt * 0.9);
+    }
+  }
+  if (state.spawned && playing && !boat.state.aboard) physics(dt);
   else if (!state.spawned) state.pos[1] = 72;
   else if (!playing) state.yaw += dt * 0.03; // slow pan behind the menu
-  target = playing ? raycast(eyePos(), camDir(), 7) : null;
+  target = playing && !boat.state.aboard ? raycast(eyePos(), camDir(), 7) : null;
   const time = (now - clockStart) / 1000;
   render(time, dt);
   if (!playing) drawGlobe(now, dt);
@@ -1786,7 +1862,7 @@ function frameBody(now) {
     hud.textContent =
       `${fps.toFixed(0).padStart(3)} fps   ${(stats.tris / 1000).toFixed(0)}k tris   ${stats.draws} draws\n` +
       `${ready} chunks · ${stats.visible} in view · ${inflight()} growing\n` +
-      `${clock(settings.tod)}   x ${p[0].toFixed(1)}  y ${p[1].toFixed(1)}  z ${p[2].toFixed(1)}${state.fly ? '   flying' : ''}   seed ${settings.seed} · ${BUILD}`;
+      `${clock(settings.tod)}   x ${p[0].toFixed(1)}  y ${p[1].toFixed(1)}  z ${p[2].toFixed(1)}${boat.state.aboard ? `   sailing ${(Math.abs(boat.state.speed) * 1.944).toFixed(1)} kn` : state.fly ? '   flying' : ''}   seed ${settings.seed} · ${BUILD}`;
     const loading = $('loading');
     loading.hidden = state.spawned;
     if (!state.spawned) loading.textContent = planet ? 'Growing the forest…' : planetText;
@@ -1848,6 +1924,6 @@ function restoreAt(data) {
     if (ch && ch.state === 'ready') { state.pos = keepPos.slice(); state.spawned = true; state.restoring = false; clearInterval(restoreTick); }
   }, 100);
 }
-window.__emberwood = { heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
+window.__emberwood = { heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, boat, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
 if (hot && hot.ready) hot.ready(start); else start(hot && hot.data ? hot.data : {});
 })();

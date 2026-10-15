@@ -107,6 +107,7 @@ body.touch #stick:not([hidden]) { display: block; }
 #t-break { right: 90px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 #t-place { right: 20px; bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 #t-fly { right: 90px; bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+#t-boat { right: 160px; bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
 #t-menu { right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); width: 44px !important; height: 44px !important; }
 body.touch.playing #loading { display: none; }
 @media (max-width: 520px) {
@@ -130,6 +131,7 @@ body.touch.playing #loading { display: none; }
   <button id="t-break" type="button">Break</button>
   <button id="t-place" type="button">Place</button>
   <button id="t-fly" type="button">Fly</button>
+  <button id="t-boat" type="button">Boat</button>
   <button id="t-menu" type="button">II</button>
 </div>
 
@@ -162,6 +164,7 @@ body.touch.playing #loading { display: none; }
       <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Walk, <kbd>Shift</kbd> to run</dd>
       <dt><kbd>Space</kbd></dt><dd>Jump or swim up</dd>
       <dt><kbd>F</kbd></dt><dd>Fly; <kbd>Space</kbd> rises, <kbd>C</kbd> sinks</dd>
+      <dt><kbd>B</kbd></dt><dd>Launch, board or leave the boat; <kbd>W</kbd>/<kbd>S</kbd> throttle, <kbd>A</kbd>/<kbd>D</kbd> helm</dd>
       <dt>Left / right click</dt><dd>Break / place a block</dd>
       <dt><kbd>1</kbd>–<kbd>9</kbd>, wheel</dt><dd>Choose a block</dd>
       <dt><kbd>G</kbd></dt><dd>Cycle shader looks</dd>
