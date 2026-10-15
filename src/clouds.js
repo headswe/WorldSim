@@ -126,9 +126,12 @@ function createWeather(gl) {
     for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
       const u = x / S, v = y / S, i = (y * S + x) * 4;
       out[i] = c01((fbm(0, 5, u, v) - 0.22) / 0.56);
-      out[i + 1] = c01((1 - worley(6, f6, u, v) * 1.15) * 0.7 + (1 - worley(13, f13, u, v) * 1.15) * 0.3);
+      // billows use the squared cell distance: round-topped bumps (plain distance makes cones,
+      // which stood up as pointed fins once the clouds got height)
+      const bw = (F, fp) => Math.max(0, 1 - (worley(F, fp, u, v) * 1.15) ** 2);
+      out[i + 1] = c01(bw(6, f6) * 0.7 + bw(13, f13) * 0.3);
       out[i + 2] = c01((fbm(2, 7, u, v) - 0.2) / 0.6);
-      out[i + 3] = c01((1 - worley(24, f24, u, v) * 1.1) * 0.65 + (1 - worley(47, f47, u, v) * 1.1) * 0.35);
+      out[i + 3] = c01(bw(24, f24) * 0.65 + bw(47, f47) * 0.35);
     }
     gl.bindTexture(gl.TEXTURE_2D, tex2);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, S, S, 0, gl.RGBA, gl.UNSIGNED_BYTE, out);

@@ -77,7 +77,6 @@ const progs = {
   water: program(VS_TERRAIN, FS_WATER),
   shadow: program(VS_SHADOW, FS_SHADOW),
   sky: program(VS_SKY, FS_SKY),
-  cloudVol: program(VS_SKY, FS_CLOUDVOL),
   leaf: program(VS_LEAF, FS_LEAF),
   line: program(VS_LINE, FS_LINE),
   bolt: program(VS_BOLT, FS_BOLT),
@@ -229,25 +228,6 @@ const emptyVao = gl.createVertexArray();
 const weather = createWeather(gl);
 const localWind = [0.7, 0.2], cloudWind = [0, 0];
 let cloudMean = 0.3;
-// low-resolution target the volumetric clouds are raymarched into, read back by the sky pass
-let cloudT = null;
-function cloudTarget(w, h) {
-  if (cloudT && cloudT.w === w && cloudT.h === h) return cloudT;
-  if (cloudT) { gl.deleteTexture(cloudT.tex); gl.deleteFramebuffer(cloudT.fbo); }
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  if (gl.getExtension('EXT_color_buffer_float')) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
-  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  const fbo = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return (cloudT = { w, h, tex, fbo });
-}
 const cloudsOn = () => settings.fx.clouds && weather.ready;
 gl.bindVertexArray(null);
 
@@ -1281,25 +1261,6 @@ function render(time, dt) {
   gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, weather.mapPrev);
   gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D, weather.map2Prev);
   gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, weather.tex2);
-  // volumetric clouds into their own low-resolution target (sky pixels read it below)
-  let ct = null;
-  if (cloudsOn()) {
-    const cs = Math.min(1, Math.max(0.25, settings.fx.cloudRes || 0.5));
-    ct = cloudTarget(Math.max(1, Math.round(W * cs)), Math.max(1, Math.round(H * cs)));
-    gl.bindFramebuffer(gl.FRAMEBUFFER, ct.fbo);
-    gl.viewport(0, 0, ct.w, ct.h);
-    gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
-    const pr = progs.cloudVol;
-    gl.useProgram(pr.p);
-    setCommon(pr, eye, time);
-    setU(pr, 'uInvVP', invert(vp)); setI(pr, 'uNoise3', 7);
-    setU(pr, 'uPixAng', 2 * Math.tan(fov / 2) / ct.h);
-    const f = env.flash;
-    setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, 0, f.z, f.I] : [0, 0, 0, 0]);
-    gl.bindVertexArray(emptyVao);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
-  }
   post.beginScene();
   gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
 
@@ -1316,7 +1277,9 @@ function render(time, dt) {
     setU(pr, 'uTan', [ty * aspect, ty]);
     setU(pr, 'uStarP', env.starP); setU(pr, 'uStarM', env.starM); setU(pr, 'uStarE', env.starE);
     setU(pr, 'uMoonDir', env.moonDir); setU(pr, 'uSunTrue', env.sunUp ? 1 : 0);
-    gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_2D, ct ? ct.tex : null); setI(pr, 'uCloudVol', 13);
+    setU(pr, 'uPixAng', 2 * Math.tan(fov / 2) / H);
+    const f = env.flash;
+    setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, 0, f.z, f.I] : [0, 0, 0, 0]);
     gl.bindVertexArray(emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
@@ -1610,18 +1573,16 @@ for (const [k, label] of FX_LABELS) {
   fxGrid.appendChild(l);
   l.firstChild.addEventListener('change', e => { settings.fx[k] = e.target.checked; saveSettings(); });
 }
-const lookEl = $('look'), expoEl = $('exposure'), cresEl = $('cloudres');
+const lookEl = $('look'), expoEl = $('exposure');
 LOOKS.forEach((n, i) => { const o = document.createElement('option'); o.value = i; o.textContent = n; lookEl.appendChild(o); });
 function syncFx() {
   for (const [k] of FX_LABELS) $('fx-' + k).checked = !!settings.fx[k];
   lookEl.value = settings.fx.look; expoEl.value = settings.fx.exposure;
   $('exposure-v').textContent = settings.fx.exposure.toFixed(2) + '×';
-  cresEl.value = settings.fx.cloudRes; $('cloudres-v').textContent = Math.round(settings.fx.cloudRes * 100) + '%';
 }
 syncFx();
 lookEl.addEventListener('change', () => { settings.fx.look = Number(lookEl.value); saveSettings(); });
 expoEl.addEventListener('input', () => { settings.fx.exposure = Number(expoEl.value); syncFx(); saveSettings(); });
-cresEl.addEventListener('input', () => { settings.fx.cloudRes = Number(cresEl.value); syncFx(); saveSettings(); });
 $('fx-all').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = true; syncFx(); saveSettings(); });
 $('fx-none').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = false; syncFx(); saveSettings(); });
 

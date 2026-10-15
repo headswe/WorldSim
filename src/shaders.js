@@ -97,6 +97,13 @@ vec4 bspl(sampler2D s, vec2 uv){
   vec2 c0=(i-0.5+w1/g0)/128.0, c1=(i+1.5+w3/g1)/128.0;
   return g0.y*(g0.x*texture(s,vec2(c0.x,c0.y))+g1.x*texture(s,vec2(c1.x,c0.y)))+g1.y*(g0.x*texture(s,vec2(c0.x,c1.y))+g1.x*texture(s,vec2(c1.x,c1.y)));
 }
+vec4 bsplL(sampler2D s, vec2 uv){
+  vec2 p=uv*128.0-0.5, i=floor(p), f=p-i, f2=f*f, f3=f2*f;
+  vec2 w0=(1.0-3.0*f+3.0*f2-f3)/6.0, w1=(4.0-6.0*f2+3.0*f3)/6.0, w2=(1.0+3.0*f+3.0*f2-3.0*f3)/6.0, w3=f3/6.0;
+  vec2 g0=w0+w1, g1=w2+w3;
+  vec2 c0=(i-0.5+w1/g0)/128.0, c1=(i+1.5+w3/g1)/128.0;
+  return g0.y*(g0.x*textureLod(s,vec2(c0.x,c0.y),0.0)+g1.x*textureLod(s,vec2(c1.x,c0.y),0.0))+g1.y*(g0.x*textureLod(s,vec2(c0.x,c1.y),0.0)+g1.x*textureLod(s,vec2(c1.x,c1.y),0.0));
+}
 vec4 cloudMapS(vec2 xz){ return mix(bspl(uCloudMapP,(xz/16.0-uCloudOP)/128.0),bspl(uCloudMap,cloudUV(xz)),uCloudF); }
 vec4 cloudMapLod(vec2 xz, vec2 du, float l){ return mix(textureLod(uCloudMapP,(xz/16.0-uCloudOP)/128.0+du,l),textureLod(uCloudMap,cloudUV(xz)+du,l),uCloudF); }
 // ---- sky cloud layer ----
@@ -633,7 +640,91 @@ vec3 starField(vec3 d){
   col+=vec3(0.55,0.6,0.8)*band*smoothstep(0.25,0.85,cl)*0.07;
   return col;
 }
-uniform sampler2D uCloudVol;
+uniform vec4 uFlash; uniform float uPixAng;
+// ---- clouds ----
+// Each cloud is a solid shape: a flat base at CB and a lumpy dome above it whose height at xz is a
+// height field (cTop) built from the simulated cover and a drifting 2D noise. A view ray is traced
+// against that surface at full resolution: a fixed run of steps finds where it goes inside, and
+// the crossing is found exactly between the last two steps, so the hit point moves smoothly with
+// the camera. Rays that just miss give a soft edge from how close they came. There is no random
+// offset, no lower-resolution buffer and no blending with earlier frames: every frame is the same
+// smooth function of camera and time, which is what keeps the clouds still while moving.
+const float CB=420.0, CHT=260.0;
+// how far up the cloud at xz reaches, as a fraction of CHT (negative where there is none)
+float cTop(vec2 xz, float foot, bool smoothMap){
+  vec2 uv=cloudUV(xz);
+  vec2 ee=smoothstep(vec2(0.0),vec2(0.2),uv)*smoothstep(vec2(1.0),vec2(0.8),uv);
+  // cover from a cubic B-spline over the map (plain bilinear gives the domes flat facets)
+  float m=smoothMap ? mix(bsplL(uCloudMapP,(xz/16.0-uCloudOP)/128.0).r,bsplL(uCloudMap,uv).r,uCloudF) : cloudMapLod(xz,vec2(0.0),0.0).r;
+  float cov=mix(uCloudMean,m*m,ee.x*ee.y);
+  vec2 h=cloudThickL(xz,cov,foot);
+  float sh=h.y*0.75+h.x*0.25;
+  // a dome: steep sides, round top; small clouds stay low and wide. Below the edge the value keeps
+  // falling, so open sky is well clear of the soft-edge band.
+  return sh>0.03 ? pow(sh-0.03,0.6)*mix(0.15,0.85,smoothstep(0.1,0.7,h.y))-0.012 : (sh-0.03)*4.0-0.012;
+}
+vec4 skyClouds(vec3 d){
+  if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
+  // The steps sit on 48 horizontal slices at fixed heights through the layer, so along the
+  // horizon (where a ray climbs slowly through it) they don't slide with the camera, and every
+  // lookup is filtered for the larger of the pixel and the gap between steps, so detail smaller
+  // than that gap can't slip between steps and pop in and out.
+  const float NSL=48.0, DS=CHT/NSL;
+  float tb=(CB-uCam.y)/d.y;
+  vec3 pb=uCam+d*tb;
+  float stp=DS/d.y;
+  float gPrev=-cTop(pb.xz,max(tb*uPixAng,stp*0.5),false);
+  bool under=gPrev<0.0, hit=under;
+  vec3 hp=pb, pmin=pb; float gmin=max(gPrev,0.0);
+  if(!under){
+    vec3 pPrev=pb;
+    for(int i=0;i<48;i++){
+      float t=(CB+(float(i)+0.5)*DS-uCam.y)/d.y;
+      if(t>tb+6000.0) break;
+      vec3 p=uCam+d*t;
+      float g=(p.y-CB)/CHT-cTop(p.xz,max(t*uPixAng,stp*0.5),false);
+      if(g<0.0){ hp=mix(pPrev,p,gPrev/(gPrev-g)); hit=true; break; }
+      if(g<gmin){ gmin=g; pmin=p; }
+      gPrev=g; pPrev=p;
+    }
+  }
+  vec3 sp=hit ? hp : pmin;
+  float t=length(sp-uCam), foot=max(t*uPixAng,stp*0.5);
+  // surface normal of the dome (the flat base faces straight down)
+  float E=max(10.0,foot*2.0);
+  float h0=cTop(sp.xz,foot,true), hx=cTop(sp.xz+vec2(E,0.0),foot,true), hz=cTop(sp.xz+vec2(0.0,E),foot,true);
+  vec3 n=normalize(vec3(-(hx-h0)*CHT/E,1.0,-(hz-h0)*CHT/E));
+  if(under) n=normalize(mix(vec3(0.0,-1.0,0.0),n,0.25));
+  // cloud between this point and the sun (and, under the base, the whole body above it)
+  float occ=under ? max(h0,0.0)*2.2 : 0.0;
+  float L=28.0;
+  for(int j=0;j<3;j++){
+    vec3 q=sp+uSunDir*L;
+    float gq=(q.y-CB)/CHT-cTop(q.xz,foot+L*0.5,false);
+    occ+=smoothstep(0.03,-0.12,gq)*(0.7+0.3*float(j));
+    L*=2.6;
+  }
+  float sunVis=exp(-occ*1.5);
+  float dif=clamp(dot(n,uSunDir)*0.6+0.4,0.0,1.0);
+  float mu=dot(d,uSunDir);
+  const float G=0.6;
+  float hg=(1.0-G*G)/pow(1.0+G*G-2.0*G*mu,1.5)*0.1;
+  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.25);
+  vec3 amb=uZenith*0.75+uHorizon*0.45;
+  amb=mix(vec3(dot(amb,vec3(0.3,0.5,0.2))),amb,0.45);
+  // soft edge at least two pixels wide, so silhouettes are antialiased and don't crawl when turning
+  float alpha=hit ? 1.0 : smoothstep(max(0.035,2.5*foot/CHT*max(1.0,0.25/d.y)),0.0,gmin);
+  vec3 col=amb*(0.8+0.25*n.y)*(under ? mix(1.15,0.7,clamp(h0*1.5,0.0,1.0)) : 1.0)+sunL*sunVis*dif;
+  // thin edges glow when backlit by the sun
+  col+=sunL*hg*(1.0-alpha*0.6)*(0.4+0.6*sunVis);
+  // raining cloud is dark grey, lightning lights it from inside
+  col*=1.0-0.5*cloudMapLod(sp.xz,vec2(0.0),1.0).b;
+  if(uFlash.w>0.0) col+=vec3(0.7,0.75,1.0)*uFlash.w*3.0*exp(-length(sp.xz-uFlash.xz)/500.0);
+  // distant cloud sinks into the haze of the horizon
+  float f=exp(-max(t-2200.0,0.0)*0.00028)*smoothstep(0.02,0.08,d.y);
+  col=mix(skyCol(d),col,f);
+  return vec4(col,alpha*mix(0.3,1.0,f));
+}
 void main(){
   vec3 d=normalize(uFwd+vP.x*uRight*uTan.x+vP.y*uUp*uTan.y);
   vec3 c=skyCol(d);
@@ -649,129 +740,11 @@ void main(){
     float disc=smoothstep(0.99945,0.99965,ms);
     c=mix(c,vec3(0.86,0.88,0.94)*(0.75+0.35*mare)*(0.35+2.2*uNight),disc*smoothstep(-0.02,0.02,uMoonDir.y));
   }
-  // volumetric clouds, raymarched at lower resolution just before: rgb added light, a transmittance
-  if(uCloudOn>0.5){ vec4 cl=texture(uCloudVol,vP*0.5+0.5); c=c*cl.a+cl.rgb/max(uEnc,1e-6); }
+  vec4 cl=skyClouds(d);
+  c=mix(c,cl.rgb,cl.a);
   o=vec4(outHDR(c),1.0);
 }`;
 
-// ---- volumetric clouds ----
-// Raymarched through the layer CB..CB+CH (after the approach in Maxime Heckel's "Real-time
-// cloudscapes with volumetric raymarching": density from layered noise, Beer-Lambert with a
-// powder term, a short march toward the sun per sample, Henyey-Greenstein phase).
-// What keeps it still while the camera moves: samples sit on horizontal slices at fixed world
-// heights with no random offset, there is no blending with earlier frames, and every noise lookup
-// is filtered for the size of the pixel and step. Each frame is the same function of camera and
-// time, so nothing can shimmer or crawl.
-const FS_CLOUDVOL = `#version 300 es
-${GLSL_COMMON}
-in vec2 vP; out vec4 o;
-uniform mat4 uInvVP; uniform highp sampler3D uNoise3; uniform vec4 uFlash; uniform float uPixAng;
-const float CB=400.0, CH=240.0, NS=36.0;
-// density at p; foot is the world size this sample stands for (picks the noise mip level)
-float dens(vec3 p, float foot, bool full){
-  float cov=cloudCoverL(p.xz);
-  vec2 hh=cloudThickL(p.xz,cov,full?foot:max(foot,40.0));
-  float hb=hh.y;
-  if(hb<=0.0) return 0.0;
-  // small clouds are flat and wide, big ones tower (thin bumps grew into tall spikes otherwise)
-  float top=CB+20.0+CH*pow(hb,1.6);
-  float v=(p.y-CB)/(top-CB);
-  if(v<0.0||v>1.0) return 0.0;
-  // flat bases, rounded tops: the higher up, the thicker the column must be to still be cloud
-  float d=(full?hh.x:hb)-v*v*0.8-0.05;
-  if(full && d>-0.3){
-    // 3D billows and wisps, drifting with the wind, so the sides are not walls of the 2D field
-    vec3 w=p+vec3(uCloudWind.x,0.0,uCloudWind.y);
-    float l=log2(max(foot,1e-3)*64.0);
-    vec2 n=textureLod(uNoise3,w*(1.0/210.0),max(0.0,l-log2(210.0))).rg;
-    float n2=textureLod(uNoise3,w*(1.0/62.0)+0.31,max(0.0,l-log2(62.0))).g;
-    d-=(1.0-mix(n.r,n.g,0.6))*0.3+(1.0-n2)*0.12*(1.0-v*0.5);
-  }
-  return clamp(d*3.0,0.0,1.0)*smoothstep(0.0,0.05,v);
-}
-// cheap test whether p is in or near cloud (smooth body only, generous margin)
-bool nearCloud(vec3 p, float foot){
-  vec2 hh=cloudThickL(p.xz,cloudCoverL(p.xz),max(foot,40.0));
-  if(hh.y<=0.0) return false;
-  float v=(p.y-CB)/(20.0+CH*pow(hh.y,1.6));
-  return v>-0.1 && v<1.1 && hh.y-v*v*0.8>-0.25;
-}
-void main(){
-  vec4 a=uInvVP*vec4(vP,-1.0,1.0), b=uInvVP*vec4(vP,1.0,1.0);
-  vec3 ro=uCam, rd=normalize(b.xyz/b.w-a.xyz/a.w);
-  o=vec4(0.0,0.0,0.0,1.0);
-  float ay=abs(rd.y);
-  if(uCloudOn<0.5 || ay<0.012) return;
-  const float TOP=CB+CH+25.0, DY=(TOP-CB)/NS;
-  float ylo=CB, yhi=TOP;
-  // the slab part in front of the camera
-  float ta=(ylo-ro.y)/rd.y, tb=(yhi-ro.y)/rd.y;
-  float t0=max(min(ta,tb),0.0), t1=max(ta,tb);
-  if(t1<=t0) return;
-  t1=min(t1,14000.0);
-  // Fine slices every DF blocks at CB+(m+0.5)*DF; empty sky is crossed three slices at a time
-  // (every coarse step lands on a fine slice), and near cloud the march takes every fine slice.
-  const float DF=DY/3.0;
-  float ys=ro.y+rd.y*t0;
-  float dk=rd.y>0.0 ? 1.0 : -1.0;
-  float k=rd.y>0.0 ? ceil((ys-CB)/DF-0.5) : floor((ys-CB)/DF-0.5);
-  // align to the coarse grid (m = 3j+1) so coarse samples are the same in every frame
-  k=rd.y>0.0 ? k+mod(1.0-k,3.0) : k-mod(k-1.0,3.0);
-  float dt=DF/ay;
-  int fine=0;
-  float pixAng=uPixAng;
-  float mu=dot(rd,uSunDir);
-  const float g1=0.65, g2=-0.2;
-  float ph=mix((1.0-g1*g1)/pow(1.0+g1*g1-2.0*g1*mu,1.5),(1.0-g2*g2)/pow(1.0+g2*g2-2.0*g2*mu,1.5),0.35)*0.25;
-  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.25);
-  vec3 amb0=uZenith*0.75+uHorizon*0.45;
-  amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.5);
-  vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0;
-  for(int i=0;i<150;i++){
-    float y=CB+(k+0.5)*DF;
-    if(y<CB-DF||y>TOP+DF) break;
-    float t=(y-ro.y)/rd.y;
-    if(t>t1) break;
-    vec3 p=ro+rd*t;
-    float foot=max(t*pixAng,dt*0.35);
-    if(fine==0){
-      if(t>=t0-dt*3.0 && nearCloud(p,foot)){ fine=4; k-=2.0*dk; continue; }
-      k+=3.0*dk; continue;
-    }
-    k+=dk;
-    if(t<t0) continue;
-    float d=dens(p,foot,true);
-    if(d<=0.002){
-      // back to coarse steps once clear of cloud, on the next coarse-grid slice
-      fine--; if(fine<=0 && mod(k-1.0,3.0)<0.5){ fine=0; } else if(fine<=0) fine=1;
-      continue;
-    }
-    fine=4;
-    // light march: four growing steps toward the sun through the smooth body
-    float ls=0.0, ds=18.0; vec3 lp=p;
-    for(int j=0;j<4;j++){ lp+=uSunDir*ds; ls+=dens(lp,foot+ds,false)*ds; ds*=1.9; }
-    float sigma=d*0.085;
-    float beer=exp(-ls*0.06)+0.3*exp(-ls*0.015);
-    float powder=1.0-exp(-d*8.0);
-    float sun=beer*mix(1.0,powder,0.5)*2.2;
-    float h=(p.y-CB)/(TOP-CB);
-    vec3 amb=amb0*mix(0.55,1.1,h);
-    amb*=1.0-0.55*cloudMapLod(p.xz,vec2(0.0),0.0).b;
-    vec3 S=(sunL*sun*ph*1.6+amb)*sigma;
-    if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/400.0)*sigma;
-    float tr=exp(-sigma*dt);
-    col+=T*(S-S*tr)/max(sigma,1e-5);
-    tsum+=T*(1.0-tr)*t; wsum+=T*(1.0-tr);
-    T*=tr;
-    if(T<0.01) break;
-  }
-  // distant cloud sinks into the haze of the horizon
-  float tc=wsum>1e-4 ? tsum/wsum : t0;
-  float fade=exp(-max(tc-3000.0,0.0)*0.00018)*smoothstep(0.012,0.06,ay);
-  col=mix(skyCol(rd)*(1.0-T),col,fade);
-  T=mix(1.0,T,fade*0.85+0.15);
-  o=vec4(outHDR(col),T);
-}`;
 
 const VS_LEAF = `#version 300 es
 ${GLSL_COMMON}
