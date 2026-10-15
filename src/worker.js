@@ -93,7 +93,8 @@ const cellY = new Float32Array(PN), lakeY = new Float32Array(PN), rainN = new Fl
 // land rises quickly off the coast (so lowland rivers still sit in valleys) and then more slowly
 // toward the peaks
 const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
-const elevToY = e => e <= 0 ? Math.max(8, WL + e * 14) : WL + 0.6 + 30 * (1 - Math.exp(-e / 0.9)) + 4 * (1 - Math.exp(-e / 0.06)) + 26 * smooth(0.35, 1.6, e);
+// the sea floor drops off the coast to about 27 blocks deep in the open ocean (it was ~12)
+const elevToY = e => e <= 0 ? WL - 27 * (1 - Math.exp(e / 0.55)) : WL + 0.6 + 30 * (1 - Math.exp(-e / 0.9)) + 4 * (1 - Math.exp(-e / 0.06)) + 26 * smooth(0.35, 1.6, e);
 const pcell = (i, j) => ((j < 0 ? 0 : j >= PH ? PH - 1 : j) * PW) + (((i % PW) + PW) % PW);
 const cr = (a, b, c, d, t) => b + 0.5 * t * (c - a + t * (2 * a - 5 * b + 4 * c - d + t * (3 * (b - c) + d - a)));
 function planetY(x, z) {
@@ -189,7 +190,7 @@ function baseHeight(x, z) {
   // never cut dry land below the lake level (no stray puddles in gully bottoms)
   if (h0 >= WL + 1 && h < WL + 1) { ero += WL + 1 - h; h = WL + 1; }
   EROSION = ero;
-  if (h < WL) h = WL - (WL - h) * 0.6;
+  if (h < WL) h = Math.max(2, h);
   return h;
 }
 

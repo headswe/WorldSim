@@ -22,7 +22,7 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, ocean: true, mist: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
+  caustics: true, ocean: true, mist: true, clouds: true, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
@@ -224,7 +224,9 @@ gl.bindVertexArray(lineVao);
 const emptyVao = gl.createVertexArray();
 // ---------- weather ----------
 const weather = createWeather(gl);
-const localWind = [0.7, 0.2];
+const localWind = [0.7, 0.2], cloudWind = [0, 0];
+let cloudMean = 0.3;
+const cloudsOn = () => settings.fx.clouds && weather.ready;
 gl.bindVertexArray(null);
 
 // ---------- math ----------
@@ -1164,7 +1166,8 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
-  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', 0);
+  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
+  setI(pr, 'uCloud2D', 12); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uCloudMean', cloudMean);
   setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
   setU(pr, 'uRain', env.rain);
 }
@@ -1255,6 +1258,7 @@ function render(time, dt) {
   gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, weather.map2);
   gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, weather.mapPrev);
   gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D, weather.map2Prev);
+  gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, weather.tex2);
   post.beginScene();
   gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
 
@@ -1271,6 +1275,8 @@ function render(time, dt) {
     setU(pr, 'uTan', [ty * aspect, ty]);
     setU(pr, 'uStarP', env.starP); setU(pr, 'uStarM', env.starM); setU(pr, 'uStarE', env.starE);
     setU(pr, 'uMoonDir', env.moonDir); setU(pr, 'uSunTrue', env.sunUp ? 1 : 0);
+    const f = env.flash;
+    setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, 0, f.z, f.I] : [0, 0, 0, 0]);
     gl.bindVertexArray(emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
@@ -1555,7 +1561,7 @@ seasonVis = settings.season;
 
 const FX_LABELS = [['bloom', 'Bloom'], ['rays', 'God rays'], ['ssao', 'Ambient occlusion'], ['dof', 'Depth of field'],
   ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'], ['ocean', 'Ocean ripples (FFT)'],
-  ['mist', 'Valley mist'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
+  ['mist', 'Valley mist'], ['clouds', 'Clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
 const fxGrid = $('fx-grid');
 for (const [k, label] of FX_LABELS) {
   const l = document.createElement('label');
@@ -1722,6 +1728,9 @@ function frameBody(now) {
   weather.humid = settings.envHumid; weather.cloudy = settings.envClouds; weather.stormMul = settings.envStorms; weather.rainMul = settings.envRain;
   if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }
   weather.update(dt, state.pos[0], state.pos[2]);
+  // the sky clouds drift with the mean wind, like the cloud map they are shaped by
+  cloudWind[0] -= weather.mean[0] * CLOUD_ADV * 16 * dt; cloudWind[1] -= weather.mean[1] * CLOUD_ADV * 16 * dt;
+  if (weather.ready) cloudMean += (weather.meanCover * weather.meanCover - cloudMean) * Math.min(1, dt / 4);
   // the local wind (prevailing flow plus passing storms, scaled by the wind slider) drives the
   // foliage sway, the falling leaves and the sea state; smoothed over a few seconds
   {
@@ -1734,13 +1743,13 @@ function frameBody(now) {
   }
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up
   {
-    const r = weather.ready ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(290, 320, state.pos[1])) : 0;
+    const r = weather.ready && cloudsOn() ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(290, 320, state.pos[1])) : 0;
     env.rain += (r - env.rain) * Math.min(1, dt / 3);
     const k = env.rain;
     const grey = c => { const l = (c[0] + c[1] + c[2]) / 3 * 0.8; return c.map(x => (x + (l - x) * k * 0.7) * (1 - 0.5 * k)); };
     env.zenith = grey(env.zenith); env.horizon = grey(env.horizon);
     env.sunCol = env.sunCol.map(x => x * (1 - 0.45 * k)); env.ambSky = env.ambSky.map(x => x * (1 - 0.3 * k));
-    env.flash = weather.ready ? weather.flash() : null;
+    env.flash = cloudsOn() ? weather.flash() : null;
     env.flashI = 0;
     if (env.flash) {
       const d = Math.hypot(env.flash.x - state.pos[0], env.flash.z - state.pos[2]);

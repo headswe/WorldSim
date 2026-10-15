@@ -94,6 +94,53 @@ function createWeather(gl) {
     for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.REPEAT);
   }
 
+  // 2D cloud texture for the sky layer, tiling, 256 texels: R broad fbm, G big inverted-Worley billows,
+  // B finer fbm, A small billows. Mipmapped so distant cloud is filtered, not aliased.
+  const tex2 = gl.createTexture();
+  {
+    const S = 256, out = new Uint8Array(S * S * 4);
+    let seed = 4721;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+    const lat = n => { const a = new Float32Array(n * n); for (let i = 0; i < a.length; i++) a[i] = rnd(); return a; };
+    const vn = (L, n, x, y) => {
+      const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+      const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+      const g = (a, b) => L[(((b % n) + n) % n) * n + (((a % n) + n) % n)];
+      return (g(xi, yi) * (1 - sx) + g(xi + 1, yi) * sx) * (1 - sy) + (g(xi, yi + 1) * (1 - sx) + g(xi + 1, yi + 1) * sx) * sy;
+    };
+    const fbm = (o0, oN, x, y) => { let v = 0, w = 0, a = 1; for (let o = o0; o < oN; o++) { const n = 4 << o; v += vn(LS[o], n, x * n, y * n) * a; w += a; a *= 0.55; } return v / w; };
+    const LS = []; for (let o = 0; o < 7; o++) LS.push(lat(4 << o));
+    const pts = F => { const a = []; for (let i = 0; i < F * F; i++) a.push([rnd(), rnd()]); return a; };
+    const worley = (F, fp, x, y) => {
+      const cx = x * F, cy = y * F, ix = Math.floor(cx), iy = Math.floor(cy);
+      let d = 9;
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+        const gx = ix + a, gy = iy + b, q = fp[(((gy % F) + F) % F) * F + (((gx % F) + F) % F)];
+        const dx = gx + q[0] - cx, dy = gy + q[1] - cy;
+        d = Math.min(d, dx * dx + dy * dy);
+      }
+      return Math.sqrt(d);
+    };
+    const f6 = pts(6), f13 = pts(13), f24 = pts(24), f47 = pts(47);
+    const c01 = v => Math.round(Math.min(1, Math.max(0, v)) * 255);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const u = x / S, v = y / S, i = (y * S + x) * 4;
+      out[i] = c01((fbm(0, 5, u, v) - 0.22) / 0.56);
+      out[i + 1] = c01((1 - worley(6, f6, u, v) * 1.15) * 0.7 + (1 - worley(13, f13, u, v) * 1.15) * 0.3);
+      out[i + 2] = c01((fbm(2, 7, u, v) - 0.2) / 0.6);
+      out[i + 3] = c01((1 - worley(24, f24, u, v) * 1.1) * 0.65 + (1 - worley(47, f47, u, v) * 1.1) * 0.35);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, tex2);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, S, S, 0, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  }
+  // mean cloud cover of the whole map, used for sky beyond the map's edge
+  let meanCover = 0.3;
+
   // ---- climate inputs ----
   const qsat = T => 0.5 * Math.exp(0.065 * T);
   const cellK = (gi, gj) => Math.min(PHc - 1, Math.max(0, gj)) * PWc + (((gi % PWc) + PWc) % PWc);
@@ -258,6 +305,7 @@ function createWeather(gl) {
       px2[n * 2] = Math.round(Math.min(1, ci[n]) * 255);
       px2[n * 2 + 1] = Math.round(cvt[n] * 255);
     }
+    { let t = 0; for (let n = 0; n < NN; n++) t += px[n * 4]; meanCover = t / NN / 255; }
     cur ^= 1;
     mapO[cur] = [ox, oz, mean[0], mean[1]];
     gl.bindTexture(gl.TEXTURE_2D, maps[cur]);
@@ -311,7 +359,8 @@ function createWeather(gl) {
     // over, storm strength and how readily cloud rains out
     temp: 0, humid: 1, cloudy: 1, stormMul: 1, rainMul: 1,
     envChanged() { if (pl) staticFields(); },
-    noise, mean,
+    noise, mean, tex2,
+    get meanCover() { return meanCover; },
     get map() { return maps[cur]; }, get map2() { return maps2[cur]; },
     get mapPrev() { return maps[cur ^ 1]; }, get map2Prev() { return maps2[cur ^ 1]; },
     // the field is stepped four times a second; between steps each map slides on with the mean wind
