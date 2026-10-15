@@ -1278,6 +1278,7 @@ function render(time, dt) {
     setU(pr, 'uStarP', env.starP); setU(pr, 'uStarM', env.starM); setU(pr, 'uStarE', env.starE);
     setU(pr, 'uMoonDir', env.moonDir); setU(pr, 'uSunTrue', env.sunUp ? 1 : 0);
     setU(pr, 'uPixAng', 2 * Math.tan(fov / 2) / H);
+    setI(pr, 'uNoise3', 7);
     const f = env.flash;
     setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, 0, f.z, f.I] : [0, 0, 0, 0]);
     gl.bindVertexArray(emptyVao);
