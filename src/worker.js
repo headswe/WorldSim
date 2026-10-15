@@ -116,7 +116,9 @@ function rawHeight(x, z) {
   const land = Math.min(1, Math.max(0, (Y - WL) / 5));
   const mount = Math.min(1, Math.max(0, (Y - 42) / 18));
   const b = nB(x / 95, z / 95), c = nC(x / 28, z / 28);
-  let h = Y + (b * 4.5 + c * 1.5) * (0.25 + 0.75 * land);
+  // plains keep only a gentle swell of the local hills
+  const pl = fieldAt(PL.plain, x, z);
+  let h = Y + (b * 4.5 + c * 1.5) * (0.25 + 0.75 * land) * (1 - 0.75 * pl);
   if (mount > 0) {
     // ridged multifractal on the plate ranges: knife-edge crests, steep faces, and each octave
     // only adds detail where the one above it is already high (peaks get rougher than valleys)
@@ -131,7 +133,7 @@ function rawHeight(x, z) {
   }
   // terraced cliff bands on some uplands, which give rivers somewhere to fall
   const m = nM(x / 330, z / 330);
-  const hi = Math.max(0, m - 0.05) * Math.min(1, Math.max(0, (Y - 36) / 6));
+  const hi = Math.max(0, m - 0.05) * Math.min(1, Math.max(0, (Y - 36) / 6)) * (1 - pl);
   if (hi > 0) {
     const s = 6, f = h / s, fi = Math.floor(f);
     let fr = f - fi; fr = Math.min(1, Math.max(0, (fr - 0.6) / 0.25)); fr = fr * fr * (3 - 2 * fr);
@@ -174,7 +176,7 @@ function baseHeight(x, z) {
   let shore = (h0 - WL - 1) / 6; shore = shore < 0 ? 0 : shore > 1 ? 1 : shore;
   // glaciated ground was planed smooth by ice, so rain gullies fade out under it
   const k0 = cellAt(x, z), frost = Math.min(1, Math.max(fieldAt(PL.ice, x, z), -(PL.temp[k0] - (h0 - cellY[k0]) * 0.25) / 6));
-  const steep0 = Math.min(1, Math.hypot(sx, sz) * 2.5) * shore * shore * (3 - 2 * shore) * (1 - Math.max(0, frost));
+  const steep0 = Math.min(1, Math.hypot(sx, sz) * 2.5) * shore * shore * (3 - 2 * shore) * (1 - Math.max(0, frost)) * (1 - fieldAt(PL.plain, x, z));
   let h = h0, amp = EROSION_AMP, freq = 1 / 44, ero = 0;
   if (steep0 > 0.01)
     for (let o = 0; o < 3; o++) {
@@ -201,10 +203,11 @@ function baseHeight(x, z) {
 // level is the planet's (monotone) drainage surface, so a river only ever steps down, and big
 // steps become waterfalls.
 const RIVER_MIN = RIVER_MIN_PLANET;
-const riverWidth = a => Math.min(6, Math.max(1.1, 1 + Math.sqrt(Math.max(0, a - RIVER_MIN) / RIVER_MIN) * 0.9));
+// (half-width in blocks: a brook is about 3 wide, the great rivers of a continent 25-30)
+const riverWidth = a => Math.min(16, Math.max(1.2, 1.4 + Math.sqrt(Math.max(0, a - RIVER_MIN) / RIVER_MIN) * 1.25));
 const bankW = w => 3 + w * 1.4;
 // how far from a channel valley walls can reach; level drops at least this big stay waterfalls
-const VALLEY_R = 44, FALL_STEP = 3, PEAK = CH - 40;
+const VALLEY_R = 52, FALL_STEP = 3, PEAK = CH - 40;
 const segCache = new Map();
 let segs = [];
 // one point per cell: a little jitter plus a smooth drift shared with the neighbours, so runs
@@ -271,7 +274,7 @@ function cellSegs(ci, cj) {
       const M = [(-U[0] + 9 * A[0] + 9 * B[0] - C[0]) / 16 - ez / len * off, (-U[1] + 9 * A[1] + 9 * B[1] - C[1]) / 16 + ex / len * off];
       const L = cellLevel(k), Lr = cellLevel(r);
       const w = riverWidth(PL.acc[k]);
-      // a big drop stays a waterfall at the end of the link; small ones become a sloping run
+      // a big drop is a waterfall, small ones become a sloping run
       const fall = L - Lr >= FALL_STEP, Le = fall ? L : Lr;
       // fed from above by a stream that fell into this one: the start is a plunge pool
       let plunge = false, spring = true;
@@ -281,17 +284,29 @@ function cellSegs(ci, cj) {
         if (PL.recv[kk] === k && isRiverCell(kk)) { spring = false; if (cellLevel(kk) - L >= FALL_STEP) plunge = true; }
       }
       // meanders: two more bend points pushed sideways by smooth noise, more for wider rivers
-      const amp = 3 + w * 1.1;
+      const amp = 3 + Math.min(w, 8) * 1.1;
       const bend = (P0, P1) => {
         const mx = (P0[0] + P1[0]) / 2, mz = (P0[1] + P1[1]) / 2, dx = P1[0] - P0[0], dz = P1[1] - P0[1], l = Math.hypot(dx, dz) || 1;
         const o = nD(mx / 23, mz / 23) * amp;
         return [mx - dz / l * o, mz + dx / l * o];
       };
       const Q1 = bend(A, M), Q2 = bend(M, B), pts = [A, Q1, M, Q2, B];
+      // The water steps down where the ground under the channel does, not only at the end of
+      // the link: a stream that reaches the edge of a lower valley drops into it there instead
+      // of running on at its old height across the valley floor, held up by banks (which left
+      // walls and pillars standing in the valleys).
+      const lv = [L, 0, 0, 0, Lr];
+      for (let n = 1; n < 4; n++) {
+        const [x, z] = pts[n];
+        let g = rawHeight(x, z);
+        for (const [dx, dz] of [[5, 0], [-5, 0], [0, 5], [0, -5]]) g = Math.min(g, rawHeight(x + dx, z + dz));
+        lv[n] = Math.max(Lr, Math.min(lv[n - 1], L + (Le - L) * n / 4, Math.floor(g) - 1));
+      }
       for (let n = 0; n < 4; n++) {
         const [ax, az] = pts[n], [bx, bz] = pts[n + 1], l = Math.hypot(bx - ax, bz - az) || 1;
-        out.push({ ax, az, bx, bz, L: L + (Le - L) * n / 4, L2: L + (Le - L) * (n + 1) / 4, w, fx: (bx - ax) / l, fz: (bz - az) / l,
-          lip: fall && n === 3, plunge: plunge && n === 0, spring: spring && n === 0 });
+        const drop = lv[n] - lv[n + 1], f = drop >= FALL_STEP;
+        out.push({ ax, az, bx, bz, L: lv[n], L2: f ? lv[n] : lv[n + 1], w, fx: (bx - ax) / l, fz: (bz - az) / l,
+          lip: f, plunge: n === 0 ? plunge : lv[n - 1] - lv[n] >= FALL_STEP, spring: spring && n === 0 });
       }
     }
   }
@@ -370,19 +385,20 @@ function buildDeltas() {
 // Gather the river segments that can touch a region (world block bounds, inclusive).
 function prepareRivers(x0, z0, x1, z1) {
   segs = [];
-  const mx = (x0 + x1) / 2;
+  // (channels are gathered out to VALLEY_R past their edge, the widest river included, so every
+  // chunk sees the same valleys)
+  const M = VALLEY_R + 16, mx = (x0 + x1) / 2;
   for (const g of deltaSegs) {
-    const sh = Math.round((mx - g.ax) / PLANET_X) * PLANET_X, m = g.w + bankW(g.w) + 1;
+    const sh = Math.round((mx - g.ax) / PLANET_X) * PLANET_X, m = M;
     if (Math.max(g.ax, g.bx) + sh < x0 - m || Math.min(g.ax, g.bx) + sh > x1 + m || Math.max(g.az, g.bz) < z0 - m || Math.min(g.az, g.bz) > z1 + m) continue;
     segs.push(sh ? { ...g, ax: g.ax + sh, bx: g.bx + sh } : g);
   }
-  const M = VALLEY_R;
   const c0x = Math.floor((x0 - M) / PCELL) - 2, c1x = Math.floor((x1 + M) / PCELL) + 2;
   const c0z = Math.floor((z0 - M) / PCELL) - 2, c1z = Math.floor((z1 + M) / PCELL) + 2;
   for (let cj = c0z; cj <= c1z; cj++)
     for (let ci = c0x; ci <= c1x; ci++)
       for (const g of cellSegs(ci, cj)) {
-        const m = VALLEY_R;
+        const m = M;
         if (Math.max(g.ax, g.bx) < x0 - m || Math.min(g.ax, g.bx) > x1 + m || Math.max(g.az, g.bz) < z0 - m || Math.min(g.az, g.bz) > z1 + m) continue;
         segs.push(g);
       }
@@ -394,6 +410,7 @@ const VAL = { s: null, d: Infinity, L: 0 }; // nearest channel outside the water
 function riverAt(x, z) {
   let core = null, coreL = Infinity, bank = null, bankD = Infinity, ct = 0, cd = 0, bt = 0, near = -1;
   let bz = null, bzN = Infinity, bzD = 0, bzT = 0; // the channel whose bank zone this column is deepest inside
+  let vw = 0, vl = 0; // valley floor level: nearby channels' levels blended by distance
   for (const s of segs) {
     const ex = s.bx - s.ax, ez = s.bz - s.az;
     let t = ((x - s.ax) * ex + (z - s.az) * ez) / (ex * ex + ez * ez);
@@ -407,10 +424,13 @@ function riverAt(x, z) {
       if (nb < bzN) { bzN = nb; bz = s; bzD = d - s.w; bzT = t; }
       // the highest water right next to this column, so a bank between two channels holds both
       if (d < s.w + 2.5) near = Math.max(near, Math.round(s.L + (s.L2 - s.L) * t));
+      if (d - s.w < 30) { const k = Math.exp(-(d - s.w) / 5); vw += k; vl += k * (s.L + (s.L2 - s.L) * t); }
     }
   }
   const bankL = bank ? Math.max(near, Math.round(bank.L + (bank.L2 - bank.L) * bt)) : 0;
-  VAL.s = bank; VAL.d = bankD; VAL.L = bankL;
+  // (blending keeps the floodplain from stepping along straight lines where a river's level
+  // changes from one stretch to the next; right beside the water the bank's own level holds)
+  VAL.s = bank; VAL.d = bankD; VAL.L = bankD < 2.5 || !vw ? bankL : vl / vw;
   if (core) { RA.core = true; RA.s = core; RA.L = coreL; RA.d = cd; RA.w = core.w; RA.t = ct; return RA; }
   // (judged per channel, so a narrow stream's thin bank never punches a hole in a big river's)
   if (bz && bzN < 1) { RA.core = false; RA.s = bz; RA.L = Math.max(near, Math.round(bz.L + (bz.L2 - bz.L) * bzT)); RA.d = bzD; RA.w = bz.w; RA.t = bzT; return RA; }
@@ -423,7 +443,7 @@ function heightAt(x, z) {
   if (r) {
     const L = r.L;
     if (r.core) {
-      let depth = 1 + Math.round((1 - r.d / r.w) * (0.8 + r.w * 0.45)); // bigger rivers run deeper
+      let depth = 1 + Math.round((1 - r.d / r.w) * (0.8 + Math.min(r.w, 10) * 0.45)); // bigger rivers run deeper
       if (r.s.lip && r.t > 0.65) depth = 0;          // shallow rock lip at the top of a fall
       if (r.s.plunge && r.t < 0.45) depth += 2;      // plunge pool at the bottom
       if (r.s.spring) depth += 1;
@@ -433,19 +453,25 @@ function heightAt(x, z) {
       // banks are cut down to the water or built up into levees, then blend into the land
       // (never below one block above the water: a one-block step sends a thin sheet of flowing
       // water along the surface, and a bank level with the water would let it out)
+      // Only the two blocks next to the water are built up as a levee where the land is lower;
+      // further out the bank is only ever cut down, so where two channels at different heights
+      // run close together the higher one's bank doesn't leave blocks standing in the lower valley.
       let t = r.d / bankW(r.w); t = t * t * (3 - 2 * t);
       // (a sea-level channel meeting open water gets no bank there, so it opens into the sea)
-      if (!(L <= WL && h < WL)) h = Math.max(L + 1, L + 1 + t * (h - L - 1));
+      if (!(L <= WL && h < WL)) h = h > L + 1 ? L + 1 + t * (h - L - 1) : r.d < 2 ? L + 1 : h;
     }
   }
   // Valleys: the ground can only rise so steeply away from a river, so every stream sits in a
   // carved valley. Small high streams cut steep V-shaped notches; big rivers get a flat
   // floodplain first and gentler walls.
-  if (VAL.s && (!r || !r.core)) {
+  // The walls fade out by VALLEY_R from the channel's edge, so a column far from every river
+  // never depends on which channels a chunk happened to gather (that left cliffs on chunk edges).
+  if (VAL.s && (!r || !r.core) && VAL.d < VALLEY_R) {
     const v = VAL.s, fp = Math.max(0, v.w - 2) * 2.2;
     const slope = (0.42 + 0.5 / (1 + v.w * 0.6)) * (0.8 + 0.4 * (nC(x / 31, z / 31) * 0.5 + 0.5));
     const cap = VAL.L + 1 + Math.max(0, VAL.d - fp) * slope;
-    if (cap < h) h = cap + (h - cap) * 0.08;
+    let f = (VALLEY_R - VAL.d) / 18; f = f > 1 ? 1 : f * f * (3 - 2 * f);
+    if (cap < h) h -= (h - cap) * 0.92 * f;
   }
   // a lake's shore: ground just outside the lake rises to its water level, so a lake whose
   // edge falls on lower land doesn't pour out over it

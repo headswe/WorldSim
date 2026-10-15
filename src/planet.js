@@ -124,6 +124,23 @@ function simulatePlanet(seed, progress = () => {}) {
     const s = plates[p];
     return [s.ay * pz[k] - s.az * py[k], s.az * px[k] - s.ax * pz[k], s.ax * py[k] - s.ay * px[k]];
   };
+  // Continents are old, thick crust: a few big ragged landmasses drawn from warped large-scale
+  // noise. Plates carry them without defining them (continental plates just hold more), so a
+  // plate can be part ocean floor, part continent, and collisions raise ranges inside
+  // continents as well as along their coasts.
+  const nCont = noise3(seed + 7), nCoast = noise3(seed + 8), nPlain = noise3(seed + 9);
+  const crust0 = new Float32Array(PN);
+  for (let k = 0; k < PN; k++) {
+    const x = px[k], y = py[k], z = pz[k];
+    // two layers of warp: the broad one bends whole continents, the fine one pulls the coast
+    // out into peninsulas and pushes it in as gulfs and bays
+    let wx = x + fbm3(nWarp, x + 3, y, z, 3, 1.4) * 0.5, wy = y + fbm3(nWarp, y - 4, z, x, 3, 1.4) * 0.5, wz = z + fbm3(nWarp, z, x + 9, y, 3, 1.4) * 0.5;
+    const fx = fbm3(nCoast, wx - 7, wy, wz, 4, 3.5), fy = fbm3(nCoast, wy + 5, wz, wx, 4, 3.5), fz = fbm3(nCoast, wz, wx - 2, wy, 4, 3.5);
+    wx += fx * 0.22; wy += fy * 0.22; wz += fz * 0.22;
+    crust0[k] = fbm3(nCont, wx, wy, wz, 6, 1.25) * 1.6 + (plates[plate[k]].cont ? 0.2 : -0.2);
+  }
+  const cthr = Float32Array.from(crust0).sort()[Math.floor(PN * 0.64)];
+  const isCont = k => crust0[k] > cthr;
   // boundary cells: convergence > 0 where plates push together, < 0 where they pull apart
   progress('Raising mountain ranges', 0.1);
   const conv = new Float32Array(PN), bType = new Uint8Array(PN); // 1 cont-cont, 2 ocean under cont (cont side), 3 ocean side of subduction, 4 ocean-ocean
@@ -133,7 +150,7 @@ function simulatePlanet(seed, progress = () => {}) {
   for (let j = 0; j < PH; j++)
     for (let i = 0; i < PW; i++) {
       const k = j * PW + i, a = plate[k];
-      let c = 0, n = 0, other = -1;
+      let c = 0, n = 0, other = -1, nbK = k;
       for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const jj = j + dj;
         if (jj < 0 || jj >= PH) continue;
@@ -141,11 +158,11 @@ function simulatePlanet(seed, progress = () => {}) {
         if (b === a) continue;
         const va = vel(a, k), vb = vel(b, kk);
         const nx = px[kk] - px[k], ny = py[kk] - py[k], nz = pz[kk] - pz[k], nl = Math.hypot(nx, ny, nz) || 1;
-        c += ((va[0] - vb[0]) * nx + (va[1] - vb[1]) * ny + (va[2] - vb[2]) * nz) / nl; n++; other = b;
+        c += ((va[0] - vb[0]) * nx + (va[1] - vb[1]) * ny + (va[2] - vb[2]) * nz) / nl; n++; other = b; nbK = kk;
       }
       if (!n) continue;
       c /= n;
-      const ca = plates[a].cont, cb = plates[other].cont;
+      const ca = isCont(k), cb = isCont(nbK);
       let t = ca && cb ? 1 : ca && !cb ? 2 : !ca && cb ? 3 : 4;
       conv[k] = c; bType[k] = t; dist[k] = 0; srcConv[k] = c; srcType[k] = t;
       queue[qt++] = k;
@@ -164,16 +181,37 @@ function simulatePlanet(seed, progress = () => {}) {
   }
   // crust: continents vs ocean basins, smoothed into continental shelves
   let crust = new Float32Array(PN);
-  for (let k = 0; k < PN; k++) crust[k] = (plates[plate[k]].cont ? CONT_BASE : -0.55) + fbm3(nCrust, px[k], py[k], pz[k], 5, 1.6) * 0.55;
-  crust = blurWrap(crust, 5);
-  crust = blurWrap(crust, 3);
+  for (let k = 0; k < PN; k++) {
+    // a steep continental slope rises out of the deep ocean onto a shallow shelf, then the land
+    // climbs only gently inland, so the coast itself runs across low, easily flooded ground
+    const c = crust0[k] - cthr;
+    let sh = Math.min(1, Math.max(0, (c + 0.12) / 0.08)); sh = sh * sh * (3 - 2 * sh);
+    const ramp = Math.min(1, Math.max(0, (c + 0.04) / 0.32));
+    crust[k] = -0.55 + 0.45 * sh + (CONT_BASE + 0.1) * ramp * (1.6 - 0.6 * ramp) + fbm3(nCrust, px[k], py[k], pz[k], 5, 1.6) * 0.3;
+  }
+  crust = blurWrap(crust, 2);
+  // ragged coasts: fine noise the blur never touched gives bays, headlands and peninsulas, and
+  // out on the shallow shelves it raises scattered islands. Some coasts are smooth, some broken
+  // into whole archipelagos.
+  for (let k = 0; k < PN; k++) {
+    const x = px[k], y = py[k], z = pz[k];
+    let r = (fbm3(nCoast, x + 11, y, z, 2, 1.6) + 0.12) / 0.3; r = r < 0 ? 0 : r > 1 ? 1 : r;
+    crust[k] += fbm3(nCoast, x, y, z, 6, 4) * (0.35 + 0.9 * r);
+  }
   // highlands: thick continental crust rides high, so continents carry broad uplands and
   // plateaus (with gentle lowlands between) instead of sitting just above the sea
-  const nHigh = noise3(seed + 6), highland = new Float32Array(PN), contW = new Float32Array(PN);
+  const nHigh = noise3(seed + 6), highland = new Float32Array(PN), contW = new Float32Array(PN), plain = new Float32Array(PN);
   for (let k = 0; k < PN; k++) {
     let c = (crust[k] + 0.1) / 0.5; c = c < 0 ? 0 : c > 1 ? 1 : c * c * (3 - 2 * c);
     contW[k] = c;
-    highland[k] = c * Math.max(0, fbm3(nHigh, px[k], py[k], pz[k], 4, 2.4) + 0.12);
+    // plains: broad stretches of old, stable continent (shields and sediment basins) that never
+    // got lifted again, so they lie low and flat
+    let pl = (fbm3(nPlain, px[k], py[k], pz[k], 3, 1.7) + 0.02) / 0.16; pl = pl < 0 ? 0 : pl > 1 ? 1 : pl * pl * (3 - 2 * pl);
+    plain[k] = c * pl;
+    // uplands: broad plateaus where the noise is high, plus long worn-down ridge belts along
+    // its zero lines (old folded mountains), rather than round domes
+    const hn = fbm3(nHigh, px[k], py[k], pz[k], 4, 2.4), rg = Math.max(0, 1 - Math.abs(hn) * 6);
+    highland[k] = c * (Math.max(0, hn + 0.02) * 0.8 + rg * rg * 0.35) * (1 - plain[k]);
     crust[k] += highland[k] * HIGH_AMP;
   }
   const elev = new Float32Array(PN), uplift = new Float32Array(PN);
@@ -199,8 +237,10 @@ function simulatePlanet(seed, progress = () => {}) {
     const u = upS[k] * (0.6 + 0.8 * ridged * ridged) * 0.6;
     // slow background uplift on continents (more under the highlands) keeps relief alive while
     // rivers cut down, so the land ends up as ridges and valleys instead of a worn-flat plain
-    uplift[k] = u + contW[k] * BG_UP * (0.4 + highland[k] * 3);
-    let e = elS[k] + u + fbm3(nDetail, px[k], py[k], pz[k], 6, 9) * 0.12;
+    // (ranges still cut across a plain where plates collide)
+    plain[k] *= 1 - Math.min(1, upS[k] * 4);
+    uplift[k] = u + contW[k] * BG_UP * (0.4 + highland[k] * 3) * (1 - 0.92 * plain[k]);
+    let e = elS[k] + u + fbm3(nDetail, px[k], py[k], pz[k], 6, 9) * 0.12 * (1 - 0.7 * plain[k]);
     // polar seas at the very top and bottom of the map
     const pole = Math.abs(lat[k]) / (Math.PI / 2);
     if (pole > 0.93) e = Math.min(e, -0.4 - (pole - 0.93) * 8);
@@ -210,7 +250,11 @@ function simulatePlanet(seed, progress = () => {}) {
   {
     const s = Float32Array.from(elev).sort();
     const sl = s[Math.floor(PN * 0.69)];
-    for (let k = 0; k < PN; k++) elev[k] -= sl;
+    for (let k = 0; k < PN; k++) {
+      elev[k] -= sl;
+      // the plains settle just above the sea, tilted gently so they still drain
+      if (elev[k] > 0 && plain[k] > 0) elev[k] += (Math.max(0.03, 0.05 + elev[k] * 0.08) - elev[k]) * plain[k] * 0.9;
+    }
   }
   // hotspots: mantle plumes fixed under the drifting plates punch out chains of volcanic
   // islands. The newest island sits over the plume and is the tallest; older ones were carried
@@ -224,7 +268,7 @@ function simulatePlanet(seed, progress = () => {}) {
     const NH = 7 + Math.floor(hr() * 4);
     for (let h = 0, tries = 0; h < NH && tries < 400; tries++) {
       const k = Math.floor(hr() * PN);
-      if (plates[plate[k]].cont || elev[k] > -0.25 || Math.abs(lat[k]) > 1.0) continue;
+      if (isCont(k) || elev[k] > -0.25 || Math.abs(lat[k]) > 1.0) continue;
       h++;
       const v = vel(plate[k], k), vl = Math.hypot(v[0], v[1], v[2]) || 1;
       const len = 5 + Math.floor(hr() * 5), sp = 0.045 + hr() * 0.02;
@@ -232,17 +276,30 @@ function simulatePlanet(seed, progress = () => {}) {
         let x = px[k] - v[0] / vl * sp * n, y = py[k] - v[1] / vl * sp * n, z = pz[k] - v[2] / vl * sp * n;
         const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
         const [ci, cj] = toCell(x, y, z);
-        const peak = 0.55 + hr() * 0.25 - n * 0.2, r = 1.6 + hr() * 1.0 + n * 0.1;
-        for (let dj = -4; dj <= 4; dj++) for (let di = -4; di <= 4; di++) {
+        // big shield volcanoes with ragged flanks (lava flows, collapsed sides), so each island
+        // has its own outline instead of a round dot
+        const peak = 0.7 + hr() * 0.3 - n * 0.15, r = 2.2 + hr() * 1.8 + n * 0.12;
+        for (let dj = -8; dj <= 8; dj++) for (let di = -8; di <= 8; di++) {
           const jj = Math.floor(cj) + dj, ii = Math.floor(ci) + di;
           if (jj < 0 || jj >= PH) continue;
-          const kk = jj * PW + W(ii), d2 = ((ii + 0.5 - ci) ** 2 + (jj + 0.5 - cj) ** 2) / (r * r);
+          const kk = jj * PW + W(ii);
+          const d2 = ((ii + 0.5 - ci) ** 2 + (jj + 0.5 - cj) ** 2) / (r * r) * (1 + 1.6 * fbm3(nCoast, px[kk] * 3 + h, py[kk] * 3, pz[kk] * 3, 3, 9));
           if (d2 < 9 && peak > elev[kk]) elev[kk] += (peak - elev[kk]) * Math.exp(-d2);
           // the young volcanoes are still building, which keeps them above the waves
           if (d2 < 9 && peak > 0) { uplift[kk] += peak * 1.6 * Math.exp(-d2); volc[kk] = 1; }
         }
       }
     }
+  }
+
+  // island arcs: where ocean floor dives under ocean floor, a curved line of volcanoes rises
+  // a little way behind the trench (like the Aleutians or the Lesser Antilles)
+  for (let k = 0; k < PN; k++) {
+    if (srcType[k] !== 4 || srcConv[k] <= 0.05 || dist[k] > 7 || isCont(k)) continue;
+    const a = Math.exp(-((dist[k] - 3) ** 2) / 4) * Math.min(1, srcConv[k] * 2.5);
+    let v = (fbm3(nCoast, px[k] + 21, py[k], pz[k], 3, 16) + 0.02) / 0.18; v = v < 0 ? 0 : v > 1 ? 1 : v;
+    const add = a * v * 0.75;
+    if (add > 0.05) { elev[k] += add; uplift[k] += add * 1.2; volc[k] = 1; }
   }
 
   // ---- 2. climate ----
@@ -381,7 +438,9 @@ function simulatePlanet(seed, progress = () => {}) {
       const k = order[o], r = recv[k];
       if (r < 0 || elev[k] <= 0) continue;
       elev[k] += uplift[k] * 0.012 * dt;
-      if (fill[k] > elev[k] + 1e-4) continue; // lake floor: no incision
+      // lake floor: no incision, and the sediment rivers bring in slowly fills it, so most
+      // basins end up as flat lake plains instead of inland seas
+      if (fill[k] > elev[k] + 1e-4) { elev[k] += (fill[k] - elev[k]) * 0.07; continue; }
       const dx = (k % PW) !== (r % PW) && Math.floor(k / PW) !== Math.floor(r / PW) ? 1.414 : 1;
       const f = K * dt * (Math.sqrt(acc[k]) * (1 - 0.6 * ice[k]) + ice[k] * 1.6 * Math.pow(acc[k], 0.25)) / dx;
       const base = volc[k] ? Math.max(fill[r], 0) : fill[r];
@@ -454,7 +513,7 @@ function simulatePlanet(seed, progress = () => {}) {
   const lr = [];
   for (let k = 0; k < PN; k++) if (elev[k] > 0) lr.push(eff[k]);
   lr.sort((a, b) => a - b);
-  const q = f => lr[Math.floor(lr.length * f)] || 0, r10 = q(0.1), r25 = q(0.25), r40 = q(0.4);
+  const q = f => lr[Math.floor(lr.length * f)] || 0, r10 = q(0.1), r25 = q(0.25), r40 = q(0.4), q50 = q(0.5);
   for (let k = 0; k < PN; k++) {
     const t = temp[k], r = eff[k];
     let b;
@@ -463,12 +522,13 @@ function simulatePlanet(seed, progress = () => {}) {
     else if (t < -1) b = BIOME.TUNDRA;
     else if (t < 6) b = BIOME.TAIGA;
     else if (r < r10) b = t > 14 ? BIOME.DESERT : BIOME.GRASS;
-    else if (t < 20) b = r < r25 ? BIOME.GRASS : BIOME.AUTUMN;
+    // the drier half of the open plains is grassland: prairie and meadow with scattered trees
+    else if (t < 20) b = r < r25 || (plain[k] > 0.5 && r < q50) ? BIOME.GRASS : BIOME.AUTUMN;
     else b = r < r40 ? (r < r25 ? BIOME.DESERT : BIOME.GRASS) : BIOME.WARM;
     biome[k] = b;
   }
   progress('Done', 1);
-  return { elev, fill, lake, acc, area, recv, rain, temp, biome, plate, mouths, ice };
+  return { elev, fill, lake, acc, area, recv, rain, temp, biome, plate, mouths, ice, plain };
 }
 
 // mean temperature from latitude (sin) and height, roughly Earth-like
