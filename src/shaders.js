@@ -662,7 +662,8 @@ float cDen(vec3 p, float foot, bool full, out float top){
   // and a narrow peak in the noise cannot rise into a fin
   float hb=cloudThickL(p.xz,cov,max(foot,70.0)).y;
   if(hb<=0.0) return 0.0;
-  top=CB+18.0+(CHT-18.0)*pow(hb,1.25);
+  // even small clouds are puffs, not flat lenses that look like dark strips edge-on
+  top=CB+40.0+(CHT-40.0)*pow(hb,1.1);
   float v=(p.y-CB)/(top-CB);
   if(v<0.0||v>1.0) return 0.0;
   // flat bases, rounded tops: the higher up, the thicker the column must be to still be cloud
@@ -674,9 +675,15 @@ float cDen(vec3 p, float foot, bool full, out float top){
     vec2 n=textureLod(uNoise3,w*(1.0/210.0),max(0.0,l-log2(210.0))).rg;
     float n2=textureLod(uNoise3,w*(1.0/62.0)+0.31,max(0.0,l-log2(62.0))).g;
     d-=(1.0-mix(n.r,n.g,0.6))*0.32+(1.0-n2)*0.13*(1.0-v*0.5);
+    // small cauliflower billows that only eat into the outer shell, where the cloud is thin
+    if(d>-0.12 && d<0.3){
+      float n3=textureLod(uNoise3,w*(1.0/19.0)+0.67,max(0.0,l-log2(19.0))).g;
+      d-=(1.0-n3)*0.06*(1.0-smoothstep(0.0,0.3,d));
+    }
   }
-  return clamp(d*3.0,0.0,1.0)*smoothstep(0.0,0.05,v);
+  return clamp(d*4.0,0.0,1.0)*smoothstep(0.0,0.08,v);
 }
+float hgP(float c, float g){ float g2=g*g; return (1.0-g2)/pow(1.0+g2-2.0*g*c,1.5)*0.0796; }
 vec4 skyClouds(vec3 d){
   if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
   // quality: Low/Medium/High/Ultra sets the slice count and light steps; always full resolution
@@ -687,9 +694,11 @@ vec4 skyClouds(vec3 d){
   float mu=dot(d,uSunDir);
   const float g1=0.6, g2=-0.2;
   float ph=mix((1.0-g1*g1)/pow(1.0+g1*g1-2.0*g1*mu,1.5),(1.0-g2*g2)/pow(1.0+g2*g2-2.0*g2*mu,1.5),0.3)*0.25;
-  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.55);
-  vec3 amb0=uZenith*0.8+uHorizon*0.6;
-  amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.7);
+  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9);
+  // moonlight is faint: clouds at night are grey shapes against the sky, not lit-up white
+  sunL*=mix(1.0,0.3,uNight);
+  vec3 amb0=uZenith*0.65+uHorizon*0.6;
+  amb0=mix(vec3(dot(amb0,vec3(0.3,0.5,0.2))),amb0,0.85);
   float rain=cloudMapLod(uCam.xz+d.xz*(tb+60.0),vec2(0.0),1.0).b;
   sunL*=1.0-0.7*rain;
   vec3 col=vec3(0.0); float T=1.0, tsum=0.0, wsum=0.0;
@@ -709,14 +718,21 @@ vec4 skyClouds(vec3 d){
       lp+=uSunDir*ds; ls+=cDen(lp,foot+ds,false,tq)*ds; ds*=2.1;
     }
     float above=max(top-p.y,0.0);
-    ls=max(ls,above/max(uSunDir.y,0.25)*0.5);
+    ls=max(ls,above/max(uSunDir.y,0.25)*0.35);
     float sigma=den*0.055*(1.0+1.5*rain);
-    float beer=exp(-ls*0.055)+0.3*exp(-ls*0.014)*exp(-above*0.01);
-    float powder=1.0-exp(-den*7.0);
-    float sun=beer*mix(1.0,powder,0.5)*2.2;
+    // multiple scattering, approximated with octaves: each one lets light through more easily and
+    // scatters it more evenly, which is what makes thick cloud glow softly all through instead of
+    // going black beyond the first few metres
+    float sun=0.0, oa=1.0, ob=1.0, oc=1.0;
+    for(int k=0;k<4;k++){
+      sun+=ob*mix(hgP(mu,0.6*oc),hgP(mu,-0.2*oc),0.3)*exp(-ls*0.035*oa);
+      oa*=0.4; ob*=0.6; oc*=0.5;
+    }
+    float powder=1.0-exp(-den*6.0);
+    sun*=mix(1.0,powder,0.4)*11.0;
     float h=clamp((p.y-CB)/CHT,0.0,1.0);
-    vec3 amb=amb0*mix(0.45,1.2,h)*(1.0-0.6*rain)*mix(1.0,0.55,smoothstep(20.0,180.0,above));
-    vec3 S=(sunL*(sun*(mix(ph*1.5,0.3,smoothstep(30.0,160.0,above))+0.12)+0.2*exp(-ls*0.01))+amb)*sigma;
+    vec3 amb=amb0*mix(0.7,1.3,h)*(1.0-0.4*rain)*mix(1.0,0.8,smoothstep(20.0,180.0,above));
+    vec3 S=(sunL*sun+amb)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*stp);
     col+=T*(S-S*tr)/max(sigma,1e-5);
