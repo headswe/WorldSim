@@ -269,7 +269,9 @@ function createWeather(gl) {
       hgt[n] = Math.max(30, pl.ys[k]);
       tmp[n] = pl.tmp[k] + seasonTemp(gj) + api.temp;
       sea[n] = pl.L.elev[k] <= 0 || pl.ys[k] < 30 ? 1 : 0;
-      wet[n] = Math.min(1, pl.L.rain[k] / 2);
+      // how wet the ground usually is: the planet's water balance (rain against evaporation) if it
+      // has one, otherwise its rainfall
+      wet[n] = pl.L.moist ? Math.min(1, pl.L.moist[k]) : Math.min(1, pl.L.rain[k] / 2);
       // cold currents run up the west coasts of the subtropics (the planet makes those coasts
       // fog deserts): sea within a few cells west of land at 14-38 degrees is cold and breeds fog
       coldSea[n] = 0;
