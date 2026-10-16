@@ -209,6 +209,11 @@ float cDen(vec3 p, float foot, bool full, out float hT){
   float hf=(p.y-CB)/CHT;
   if(hf<0.0||hf>1.0) return 0.0;
   float cov=cloudCover(p.xz), typ=cloudType(p.xz);
+  // variety: a slow pattern over many km grows some clouds taller and thins others out, so the
+  // sky isn't one size of puff everywhere
+  float vr=textureLod(uCloud2D,(p.xz+uCloudWind*0.5)/16000.0,0.0).r;
+  typ=clamp(typ+(vr-0.5)*0.35*(1.0-smoothstep(0.6,0.9,typ)),0.0,1.0);
+  cov=clamp(cov+(vr-0.5)*0.12,0.0,1.0);
   vec4 pr=cProfile(typ);
   float g=smoothstep(pr.x,pr.y,hf)*(1.0-smoothstep(pr.z,pr.w,hf));
   hT=clamp(hf/pr.w,0.0,1.0);
@@ -225,8 +230,11 @@ float cDen(vec3 p, float foot, bool full, out float hT){
   if(full && c>0.0){
     vec3 dn=textureLod(uCloudDetail,q/CDT+vec3(0.0,uTime*0.002,0.0),max(0.0,log2(foot*64.0/CDT))).rgb;
     float df=dn.r*0.625+dn.g*0.25+dn.b*0.125;
+    // a coarser octave of the same detail noise, so billows come in several sizes (cauliflower)
+    float dc=textureLod(uCloudDetail,q/(CDT*2.6)+vec3(0.31,0.17,0.0),max(0.0,log2(foot*64.0/(CDT*2.6)))).r;
+    df=mix(df,dc,0.45);
     // wispy near the base, billowy higher up
-    c=clamp(cRemap(c,mix(df,1.0-df,clamp(hT*3.0,0.0,1.0))*0.38,1.0,0.0,1.0),0.0,1.0);
+    c=clamp(cRemap(c,mix(df,1.0-df,clamp(hT*3.0,0.0,1.0))*0.55,1.0,0.0,1.0),0.0,1.0);
   }
   return c;
 }
@@ -873,6 +881,37 @@ vec4 skyCirrus(vec3 d){
   vec3 col=sunL*(hgP(mu,0.7)*2.5+0.25)+amb;
   return vec4(col,dens);
 }
+// altocumulus: a high layer of small puffs in patches (a "mackerel sky"), well above the cumulus.
+// One look at a cellular slice of the cloud noise on a plane; it comes and goes in broad patches,
+// more of it in moist air, none under a storm deck (the deck hides it anyway).
+const float AH=2100.0;
+vec4 skyAlto(vec3 d){
+  if(uCloudOn<0.5 || d.y<0.03 || uCam.y>=AH) return vec4(0.0);
+  float t=(AH-uCam.y)/d.y;
+  vec2 xz=uCam.xz+d.xz*t, w=xz+uCloudWind*1.3;
+  float pch=textureLod(uCloud2D,w/22000.0+vec2(0.47,0.13),0.0).r;
+  float amt=0.45;
+  if(uCloudSim>0.5){
+    vec2 uv=cloudUV(xz);
+    float e=smoothstep(0.0,0.2,uv.x)*smoothstep(1.0,0.8,uv.x)*smoothstep(0.0,0.2,uv.y)*smoothstep(1.0,0.8,uv.y);
+    amt=mix(0.45,smoothstep(0.1,0.6,cloudMapLod(xz,vec2(0.0),4.0).r)*0.8+0.15,e);
+  }
+  float m=smoothstep(0.62-0.25*amt,0.8-0.2*amt,pch);
+  if(m<=0.0) return vec4(0.0);
+  float foot=t*uPixAng;
+  vec3 b=textureLod(uCloudBase,vec3(w/700.0,0.37),max(0.0,log2(foot*128.0/700.0))).gba;
+  float n=b.x*0.6+b.y*0.3+b.z*0.1;
+  float dens=smoothstep(0.52,0.72,n*mix(0.85,1.05,m))*m*0.85;
+  dens*=smoothstep(0.03,0.15,d.y)*exp(-max(t-7000.0,0.0)*0.00025);
+  if(dens<=0.002) return vec4(0.0);
+  float mu=dot(d,uSunDir);
+  vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9)*mix(1.0,0.3,uNight);
+  vec3 amb=uZenith*0.6+uHorizon*0.35;
+  // thicker middles are shaded underneath, thin rims glow toward the sun
+  float th=smoothstep(0.55,0.85,n);
+  vec3 col=sunL*(hgP(mu,0.6)*2.0+0.35)*mix(1.0,0.55,th)+amb*mix(0.9,0.6,th);
+  return vec4(col,dens);
+}
 vec4 skyClouds(vec3 d){
   if(uCloudOn<0.5 || d.y<0.015 || uCam.y>=CB) return vec4(0.0);
   // quality: Low/Medium/High/Ultra sets the slice count and light steps; always full resolution.
@@ -918,17 +957,20 @@ vec4 skyClouds(vec3 d){
     // rain darkens only the cloud it falls from: sampled where this sample is, blurred so a sharp
     // rain band in the sim cannot cut a hard-edged dark sheet across the sky
     float rain=max(smoothstep(0.08,0.6,cloudMapLod(p.xz,vec2(0.0),2.0).b)*uCloudSim,overcastAt(p.xz));
-    float sigma=den*0.07*(1.0+1.5*rain), od=ls*0.07*(1.0+1.5*rain);
+    // dense enough that the surface is a thin skin a few blocks deep: at 0.07 you saw ~100 blocks into
+    // the soft edge, which blurred every cloud into cotton wool
+    float sigma=den*0.2*(1.0+1.5*rain), od=ls*0.16*(1.0+1.5*rain);
     // multiple scattering as octaves (Wrenninge 2013, Hillaire 2016): each one lets light through
     // more easily and scatters it more evenly, so thick cloud glows instead of going black
     float sun=0.0, oa=1.0, ob=1.0, oc=1.0;
     for(int k=0;k<4;k++){
       sun+=ob*mix(hgP(mu,0.8*oc),hgP(mu,-0.3*oc),0.25)*exp(-od*oa);
-      oa*=0.4; ob*=0.55; oc*=0.55;
+      oa*=0.4; ob*=0.42; oc*=0.55;
     }
     // powder: sun-facing edges that light has barely entered look darker when seen from the side
-    sun*=mix(1.0,1.0-exp(-od*2.5-den*1.5),0.6*(0.55-0.45*mu))*11.0;
-    vec3 amb=amb0*mix(0.45,1.25,hT)*(1.0-0.4*rain);
+    sun*=mix(1.0,1.0-exp(-od*2.5-den*1.5),0.6*(0.55-0.45*mu))*8.5;
+    // the flat base sees only the ground and the haze under it, so it is the darkest part
+    vec3 amb=amb0*mix(0.18,1.1,smoothstep(0.0,0.6,hT))*(1.0-0.4*rain);
     vec3 S=(sunL*(1.0-0.7*rain)*sun+amb)*mix(1.0,0.4,rain)*sigma;
     if(uFlash.w>0.0) S+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0)*sigma;
     float tr=exp(-sigma*stp);
@@ -962,6 +1004,8 @@ void main(){
   }
   vec4 ci=skyCirrus(d);
   c=mix(c,ci.rgb,ci.a);
+  vec4 ac=skyAlto(d);
+  c=mix(c,ac.rgb,ac.a);
   vec4 cl=skyClouds(d);
   c=mix(c,cl.rgb,cl.a);
   // rain in the distance, rainbows in the rain, and low fog in front of it all
