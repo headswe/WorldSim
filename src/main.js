@@ -1167,7 +1167,7 @@ function placeBlock() {
 // ---------- sun & sky ----------
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const env = { foliage: 1, seaWind: [0.8, 0.6, 1], rain: 0, flash: null, flashI: 0,
-  precip: 0, snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
+  precip: 0, overcast: 0, snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
 let outflowT = 0, outflow = [0, 0, 0], snowAt = null;
 const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (((Math.floor(x) % HM) + HM) % HM)];
 // What the weather is doing where the player stands, and what it leaves on the ground.
@@ -1183,6 +1183,12 @@ function updateWeatherEnv(dt) {
   env.temp = T;
   const r = on ? Math.min(1, Math.max(0, weather.rainAt(x, z) - 0.08) / 0.6) * (1 - smooth(290, 320, y)) : 0;
   env.precip += (r - env.precip) * Math.min(1, dt / 3);
+  // overcast: rain here or within a few hundred blocks, so the sky closes in as a storm arrives
+  // and opens again slowly after it has passed
+  let rn = 0;
+  if (on) for (let k = 0; k < 9; k++) { const a = k * 0.785, d = k ? 350 : 0; rn = Math.max(rn, weather.rainAt(x + Math.cos(a) * d, z + Math.sin(a) * d) * (k ? 0.8 : 1)); }
+  rn = Math.min(1, Math.max(0, rn - 0.1) / 0.5);
+  env.overcast += (rn - env.overcast) * Math.min(1, dt / (rn > env.overcast ? 6 : 15));
   const sf = smooth(2.0, -0.5, T);
   env.snowFrac += (sf - env.snowFrac) * Math.min(1, dt / 4);
   env.rain = env.precip * (1 - env.snowFrac);
@@ -1338,7 +1344,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
-  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0); setU(pr, 'uCloudSim', settings.fx.cloudSim ? 1 : 0);
+  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0); setU(pr, 'uCloudSim', settings.fx.cloudSim ? 1 : 0); setU(pr, 'uOvercast', env.overcast);
   setI(pr, 'uCloud2D', 12); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uCloudMean', cloudMean);
   setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
   setI(pr, 'uCloudBase', 13); setI(pr, 'uCloudDetail', 14); setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11);
@@ -2000,10 +2006,10 @@ function frameBody(now) {
   updateWeatherEnv(dt);
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up
   {
-    const k = env.precip;
-    const grey = c => { const l = (c[0] + c[1] + c[2]) / 3 * 0.8; return c.map(x => (x + (l - x) * k * 0.7) * (1 - 0.5 * k)); };
+    const k = Math.max(env.precip, env.overcast * 0.85);
+    const grey = c => { const l = (c[0] + c[1] + c[2]) / 3 * 0.8; return c.map(x => (x + (l - x) * k * 0.8) * (1 - 0.62 * k)); };
     env.zenith = grey(env.zenith); env.horizon = grey(env.horizon);
-    env.sunCol = env.sunCol.map(x => x * (1 - 0.45 * k)); env.ambSky = env.ambSky.map(x => x * (1 - 0.3 * k));
+    env.sunCol = env.sunCol.map(x => x * (1 - 0.6 * k)); env.ambSky = env.ambSky.map(x => x * (1 - 0.4 * k));
     env.flash = cloudsOn() ? weather.flash() : null;
     env.flashI = 0;
     if (env.flash) {

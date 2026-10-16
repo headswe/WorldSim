@@ -126,6 +126,10 @@ vec3 skyCol(vec3 d){
 }
 // shadow of the simulated clouds: look up the cloud map where the sun ray through p meets the cloud layer
 uniform sampler2D uCloudMap; uniform vec2 uCloudO; uniform float uCloudOn; uniform float uCloudSim;
+// how stormy it is right around the player (0..1): rain falling here or close by. Rain on you means
+// cloud over you, so the sky closes into a dark deck out to a couple of km whatever the blurred map says
+uniform float uOvercast;
+float overcastAt(vec2 xz){ return uOvercast*uCloudSim*(1.0-smoothstep(1500.0,4500.0,length(xz-uCam.xz))); }
 // the previous simulation step's map, its origin, and how far the fade to the newer map has got
 uniform sampler2D uCloudMapP; uniform vec2 uCloudOP; uniform float uCloudF;
 vec2 cloudUV(vec2 xz){ return (xz/16.0-uCloudO)/128.0; }
@@ -166,7 +170,7 @@ float cloudCover(vec2 xz){
   // where it rains the cloud closes into a solid deck: read less blurred than the cover, so a storm
   // or a front's rain band isn't averaged away into the fair-weather puffs around it
   float rn=cloudMapLod(xz,vec2(0.0),2.0).b*e;
-  return max(cov,smoothstep(0.08,0.5,rn)*0.93);
+  return max(max(cov,smoothstep(0.08,0.5,rn)*0.93),overcastAt(xz)*0.97);
 }
 // cloud thickness used to come from 2D noise here; since v65 the clouds are a 3D Nubis-style
 // volume (cDen below) and the terrain's cloud shadows read the same density.
@@ -194,6 +198,8 @@ float cloudType(vec2 xz){
   vec4 m=cloudMapLod(xz,vec2(0.0),3.0);
   float cvt=mix(textureLod(uCloudMap2P,(xz/16.0-uCloudOP)/128.0,3.0).g,textureLod(uCloudMap2,uv,3.0).g,uCloudF);
   float t=mix(0.14,0.38,smoothstep(0.15,0.55,cvt))+0.6*smoothstep(0.45,0.9,m.g)*smoothstep(0.35,0.75,cvt);
+  // a rain deck is thick nimbostratus, not a thin sheet with sky light coming through
+  t=max(t,0.55*max(smoothstep(0.1,0.5,cloudMapLod(xz,vec2(0.0),2.0).b),overcastAt(xz)));
   return mix(0.36,clamp(t,0.0,1.0),e);
 }
 // density 0..1 at p; full adds the detail erosion of the edges. hT: height within this cloud
@@ -903,7 +909,7 @@ vec4 skyClouds(vec3 d){
     ls+=cDen(p+uSunDir*(s+700.0),foot+300.0,false,hq)*450.0;
     // rain darkens only the cloud it falls from: sampled where this sample is, blurred so a sharp
     // rain band in the sim cannot cut a hard-edged dark sheet across the sky
-    float rain=smoothstep(0.08,0.6,cloudMapLod(p.xz,vec2(0.0),2.0).b)*uCloudSim;
+    float rain=max(smoothstep(0.08,0.6,cloudMapLod(p.xz,vec2(0.0),2.0).b)*uCloudSim,overcastAt(p.xz));
     float sigma=den*0.07*(1.0+1.5*rain), od=ls*0.07*(1.0+1.5*rain);
     // multiple scattering as octaves (Wrenninge 2013, Hillaire 2016): each one lets light through
     // more easily and scatters it more evenly, so thick cloud glows instead of going black
