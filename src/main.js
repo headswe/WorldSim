@@ -373,7 +373,7 @@ function onPlanetMessage(d) {
 }
 const PLANET_W = 512 * 16, PLANET_H = 256 * 16;
 // ---- planet map and globe ----
-const BIOME_COL = [[38, 74, 120], [232, 238, 244], [150, 146, 118], [58, 96, 66], [196, 112, 44], [164, 160, 88], [214, 190, 132], [70, 140, 58]];
+const BIOME_COL = [[38, 74, 120], [232, 238, 244], [150, 146, 118], [58, 96, 66], [196, 112, 44], [164, 160, 88], [214, 190, 132], [70, 140, 58], [186, 168, 70], [128, 138, 84]];
 let mapPx = null;
 function buildPlanetMap() {
   const { ys, riv, lk, tmp, biome, PW, PH } = planet;
@@ -410,6 +410,8 @@ const MAP_MODES = [
   ['Temperature', 'Cold blue to hot red, falling with latitude and height'],
   ['Drainage', 'How much rain each cell gathers from upstream: the river network'],
   ['Rivers', 'Rivers by size, lakes and deltas over the biomes'],
+  ['Currents', 'Sea temperature against the average for its latitude: warm currents red, cold blue'],
+  ['Rain season', 'When the rain falls: green all year, orange mostly in summer, purple mostly in winter; white salt pans'],
 ];
 let mapModes = [], mapMode = 0;
 function buildMapMode(m) {
@@ -438,6 +440,15 @@ function buildMapMode(m) {
     } else if (m === 4) {
       c = E[k] <= 0 ? [14, 22, 36] : lerp([28, 30, 34], [120, 220, 255], Math.pow(Math.log(1 + L.acc[k]) / Math.log(201), 0.8));
       if (L.lake[k]) c = [70, 120, 220];
+    } else if (m === 6) {
+      // the sea's warmth beside the plain latitude curve (planetTemp): the currents' doing
+      const s = Math.abs(Math.sin(Math.PI / 2 - (j + 0.5) / PH * Math.PI)), a = (L.sst[k] - Math.max(-1.8, 28 - 40 * Math.pow(s, 2.5))) / 6;
+      c = E[k] > 0 ? [70, 70, 70].map(v => v * shade(k)) : a > 0 ? lerp([235, 235, 230], [210, 50, 40], a) : lerp([235, 235, 230], [40, 80, 210], -a);
+    } else if (m === 7) {
+      const north = j < PH / 2, rs = north ? L.rJul[k] : L.rJan[k], rw = north ? L.rJan[k] : L.rJul[k], tot = rs + rw;
+      const t = Math.min(1, Math.sqrt(tot / 1.2)), d = tot > 1e-6 ? (rs - rw) / tot : 0;
+      c = lerp([200, 190, 160], d > 0 ? lerp([60, 150, 70], [230, 140, 40], d * 1.6) : lerp([60, 150, 70], [140, 80, 190], -d * 1.6), t);
+      c = E[k] <= 0 ? lerp(c, [20, 30, 50], 0.7) : L.salt[k] ? [250, 250, 245] : c.map(v => v * shade(k));
     } else {
       c = E[k] <= 0 ? sea(k) : lerp(BIOME_COL[biome[k]], [255, 255, 255], 0.35).map(v => v * shade(k));
       if (L.lake[k]) c = [60, 120, 210];
@@ -495,7 +506,7 @@ const OVERLAYS = [
   ['rivers', 'R', 'Rivers'], ['contours', 'H', 'Contours'], ['plates', 'P', 'Plates'], ['wind', 'W', 'Wind & storms'],
   ['clouds', 'C', 'Clouds'], ['grid', 'G', 'Grid'], ['trail', 'T', 'Your trail'],
 ];
-const BIOME_NAMES = ['Ocean', 'Ice', 'Tundra', 'Taiga', 'Autumn forest', 'Grassland', 'Desert', 'Warm forest'];
+const BIOME_NAMES = ['Ocean', 'Ice', 'Tundra', 'Taiga', 'Autumn forest', 'Grassland', 'Desert', 'Warm forest', 'Savanna', 'Scrubland'];
 settings.mapOverlays = Object.assign({ rivers: true, grid: true, trail: true, wind: false, clouds: false, contours: false, plates: false }, settings.mapOverlays || {});
 const overlayCache = {}, trail = [];
 let mapBase = null, mapBaseMode = -1;
@@ -708,7 +719,7 @@ function dispatch(msg, transfer) {
   let best = workers[0];
   for (const w of workers) if (w.jobs < best.jobs) best = w;
   best.jobs++;
-  msg.seed = settings.seed; msg.gen = worldGen; msg.bare = settings.season === 3;
+  msg.seed = settings.seed; msg.gen = worldGen; msg.bare = settings.season === 3; msg.season = settings.season;
   best.postMessage(msg, transfer || []);
 }
 
@@ -949,10 +960,11 @@ function regrowChunks() {
   emitDirty = true;
 }
 function setSeason(i, toast) {
-  const wasBare = settings.season === 3;
+  const was = settings.season;
   settings.season = ((i % 4) + 4) % 4;
   saveSettings(); syncSeason();
-  if (wasBare !== (settings.season === 3)) regrowChunks();
+  // (every season regrows: leaves, lying snow and frozen lakes all change with it)
+  if (was !== settings.season) regrowChunks();
   if (toast) showToast(SEASONS[settings.season]);
   weather.setSeason(settings.season);
 }
@@ -1883,7 +1895,7 @@ function look(dx, dy) {
 window.addEventListener('wheel', e => { if (playing) selectSlot(state.slot + (e.deltaY > 0 ? 1 : -1)); }, { passive: true });
 window.addEventListener('keydown', e => {
   if (!$('mapview').hidden && (e.code === 'Escape' || e.code === 'KeyM')) { toggleMap(false); e.preventDefault(); return; }
-  if (!$('mapview').hidden && /^Digit[1-6]$/.test(e.code)) { setMapMode(Number(e.code.slice(5)) - 1); e.preventDefault(); return; }
+  if (!$('mapview').hidden && /^Digit[1-8]$/.test(e.code)) { setMapMode(Number(e.code.slice(5)) - 1); e.preventDefault(); return; }
   if (!$('mapview').hidden) { const o = OVERLAYS.find(o => 'Key' + o[1] === e.code); if (o) { toggleOverlay(o[0]); e.preventDefault(); return; } }
   if (e.code === 'KeyM' && document.activeElement?.tagName !== 'INPUT') { toggleMap(true); return; }
   if (!playing) {
