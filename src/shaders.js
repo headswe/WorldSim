@@ -895,10 +895,18 @@ vec4 skyClouds(vec3 d){
     if(t>tb+9000.0) break;
     vec3 p=uCam+d*t;
     float foot=max(t*uPixAng,stp*0.5), hT;
-    float den=cDen(p,foot,false,hT);
-    if(den<=0.0) continue;
-    den=cDen(p,foot,true,hT);
+    // density: the mean of three looks spread through the slice at fixed fractions of its height.
+    // One look per slice drew the side of a tall cloud as stacked stripes, one per slice, wherever
+    // the ray crosses a slice in a long slanted step. Light is still worked out once, at the middle.
+    float den=0.0, hq2;
+    for(int k=0;k<3;k++){
+      vec3 q=uCam+d*(t+stp*(float(k)-1.0)/3.0);
+      float dk=cDen(q,foot,false,hq2);
+      if(dk>0.0) den+=cDen(q,foot,true,hq2);
+    }
+    den/=3.0;
     if(den<=0.003) continue;
+    cDen(p,foot,false,hT);
     // light: growing steps toward the sun through the smooth body, then one far look, so the base
     // of a tall cloud is in its own shade
     float ls=0.0, ds=18.0, s=0.0, hq; vec3 lp=p;
