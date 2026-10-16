@@ -384,7 +384,7 @@ function buildMapMode(m) {
   const E = L.elev;
   const shade = k => { const i = k % PW, j = (k - i) / PW, ke = j * PW + (i + 1) % PW, ks = Math.min(PH - 1, j + 1) * PW + i; return Math.max(0.5, Math.min(1.4, 1 + (E[k] - E[ke] + E[k] - E[ks]) * 5)); };
   const sea = k => lerp([60, 110, 165], [18, 38, 78], -E[k] / 1.2);
-  const isRiv = k => planet.riv[k] > 0;
+  const isRiv = k => planet.riv[k] > 8; // (1..8 are headwater brooks)
   let hi = 1;
   if (m === 2) { const rs = Float32Array.from(L.rain).sort(); hi = rs[Math.floor(PN * 0.98)] || 1; }
   for (let k = 0; k < PN; k++) {
@@ -475,7 +475,7 @@ function buildOverlay(name) {
     for (let j = 0; j < PH; j++) for (let i = 0; i < PW; i++) {
       const k = j * PW + i;
       if (lk[k]) { g.fillStyle = 'rgba(90,150,230,.85)'; g.fillRect(i * S, j * S, S, S); continue; }
-      if (!riv[k] || ys[k] < 30) continue;
+      if (!riv[k] || ys[k] < 30) continue; // (riv 1..8 are headwater brooks, drawn as hairlines)
       let best = -1, ba = L.acc[k];
       for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
         const jj = j + dj; if ((!di && !dj) || jj < 0 || jj >= PH) continue;
@@ -485,8 +485,9 @@ function buildOverlay(name) {
       if (best < 0) continue;
       const bi = best % PW, bj = (best - bi) / PW;
       if (Math.abs(bi - i) > 1) continue;
-      g.strokeStyle = 'rgba(110,175,255,.95)';
-      g.lineWidth = Math.min(3.2, 0.7 + Math.log(L.acc[k] / 2) * 0.55);
+      const brook = riv[k] <= 8;
+      g.strokeStyle = brook ? 'rgba(110,175,255,.55)' : 'rgba(110,175,255,.95)';
+      g.lineWidth = brook ? 0.5 : Math.min(3.2, 0.7 + Math.log(L.acc[k] / 2) * 0.55);
       g.beginPath(); g.moveTo(cx(i), cy(j)); g.lineTo(cx(bi), cy(bj)); g.stroke();
     }
   } else if (name === 'plates') {
@@ -597,7 +598,7 @@ function mapHover(e) {
   const i = Math.floor((e.clientX - r.left) / r.width * planet.PW), j = Math.floor((e.clientY - r.top) / r.height * planet.PH);
   if (i < 0 || j < 0 || i >= planet.PW || j >= planet.PH) { $('mapinfo').textContent = ''; return; }
   const k = j * planet.PW + i, y = planet.ys[k], lat = 90 - (j + 0.5) / planet.PH * 180;
-  const what = planet.lk[k] ? 'Lake' : y < 30 ? (planet.tmp[k] < -3 ? 'Sea ice' : 'Sea') : BIOME_NAMES[planet.biome[k]] + (planet.riv[k] ? ' · river' : '');
+  const what = planet.lk[k] ? 'Lake' : y < 30 ? (planet.tmp[k] < -3 ? 'Sea ice' : 'Sea') : BIOME_NAMES[planet.biome[k]] + (planet.riv[k] > 8 ? ' · river' : planet.riv[k] ? ' · brook' : '');
   const rain = planet.L ? ` · rain ${planet.L.rain[k].toFixed(2)}` : '';
   $('mapinfo').textContent = `x ${i * 16 + 8}  z ${j * 16 + 8} · ${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'} · ${what} · height ${y} · ${planet.tmp[k]}°C${rain}`;
 }
@@ -661,8 +662,8 @@ function pickSpawn() {
       const k = j * PW + i;
       if (biome[k] !== 4 || ys[k] < 34 || ys[k] > 46) continue;
       let near = false;
-      for (let dj = -1; dj <= 1 && !near; dj++) for (let di = -1; di <= 1; di++) if (riv[(j + dj) * PW + (i + di + PW) % PW] > 0) { near = true; break; }
-      if (near && !riv[k]) cands.push(k);
+      for (let dj = -1; dj <= 1 && !near; dj++) for (let di = -1; di <= 1; di++) if (riv[(j + dj) * PW + (i + di + PW) % PW] > 8) { near = true; break; }
+      if (near && riv[k] <= 8) cands.push(k);
     }
   }
   if (!cands.length) for (let k = 0; k < PW * PH; k++) if (ys[k] > 32 && biome[k] !== 1) cands.push(k);
