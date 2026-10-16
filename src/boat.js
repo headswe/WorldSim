@@ -345,7 +345,7 @@ function createBoat(gl, program, setU) {
 
   // ---------- the sea, on the CPU ----------
   // line-for-line seaWave() from shaders.js (fp = 0): returns the surface offset of rest point p
-  const LW = [21.0, 8.5, 16.0, 11.0, 19.0, 7.0, 13.5, 9.5], BL = [88.0, 64.0, 47.0, 76.0, 55.0, 38.0];
+  const LW = [21.0, 8.5, 16.0, 11.0, 19.0, 7.0, 13.5, 9.5], BL = [88.0, 64.0, 47.0, 76.0, 55.0, 38.0], SL = [118.0, 152.0], SA = [0, 0.14];
   const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   function seaWaveJS(px, pz, t, s, deep, wind) {
     const [wx, wz, ws] = wind;
@@ -362,6 +362,14 @@ function createBoat(gl, program, setU) {
       B[i] = Math.min(0.03 * BL[i] * Math.pow(al, 1.5) * Math.pow(ws, 1.5), 0.12 / k) * grow * deep;
       S += k * B[i];
     }
+    // storm swell (wind.swell: direction x, z and height), shoaling toward the shore as in the shader
+    const sw = wind.swell || [1, 0, 0], sl = Math.hypot(sw[0], sw[1]) || 1, sdx = sw[0] / sl, sdz = sw[1] / sl;
+    const shoal = deep + (1 - deep) * (1 + 0.7 * (1 - s)) * smoothstep(0, 0.3, s), C = [];
+    for (let i = 0; i < 2; i++) {
+      const k = 6.2831 / SL[i];
+      C[i] = Math.min(sw[2] * (i ? 0.22 : 0.32) * shoal, Math.min(0.1 / k, 1.35 * s + 0.05 + (9 - 1.35 * s - 0.05) * deep));
+      S += k * C[i];
+    }
     const Q = Math.min(0.5 + 0.35 * Math.min(1, Math.max(0, (ws - 0.5) / 1.5)), 0.8 / Math.max(S, 1e-3));
     const off = [0, 0, 0];
     const add = (a, L, ang, ph) => {
@@ -371,6 +379,7 @@ function createBoat(gl, program, setU) {
     };
     for (let i = 0; i < 8; i++) add(A[i], LW[i], i * 0.7854 + 0.3, 0);
     for (let i = 0; i < 6; i++) add(B[i], BL[i], i * 1.0472 + 0.13, i * 1.7);
+    for (let i = 0; i < 2; i++) add(C[i], SL[i], Math.atan2(sdz, sdx) + SA[i], i * 2.3);
     return off;
   }
   const SEA_Y = 30.88; // the sea's top face (y 31) lowered to its full water level, as in VS_TERRAIN
