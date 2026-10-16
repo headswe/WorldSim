@@ -25,6 +25,7 @@ body { margin: 0; background: var(--bark); color: var(--parch); font-family: var
 
 #hud { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: 16px; display: grid; gap: 4px; pointer-events: none; }
 #hud .name { font-family: var(--display); font-size: 20px; letter-spacing: 0.01em; text-shadow: 0 1px 8px rgba(0,0,0,.5); }
+#hud-wx { font-size: 12px; line-height: 1.5; color: var(--parch); opacity: .9; text-shadow: 0 1px 3px rgba(0,0,0,.7); margin-bottom: 2px; }
 #hud-stats { white-space: pre; font-size: 11px; line-height: 1.5; color: var(--parch); opacity: .82; text-shadow: 0 1px 3px rgba(0,0,0,.7); font-variant-numeric: tabular-nums; }
 
 #cross { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; display: none; }
@@ -180,7 +181,7 @@ body.flying #touchui #t-down { display: block; }
 </style>
 
 <canvas id="gl" tabindex="-1"></canvas>
-<div id="hud"><div class="name">Emberwood</div><div id="hud-stats"></div></div>
+<div id="hud"><div class="name">Emberwood</div><div id="hud-wx"></div><div id="hud-stats"></div></div>
 <div id="loading">Growing the forest…</div>
 <div id="cross"></div>
 <div id="toast"></div>
@@ -262,8 +263,12 @@ body.flying #touchui #t-down { display: block; }
         <p>The map shows the whole planet with you on it. Switch between six views (terrain, plates, rain, temperature, drainage and rivers) and lay rivers, contours, plate edges, wind and storms, clouds, a grid and your own trail over any of them. Point at a place to read its biome, height and temperature. <span class="kb-only"><kbd>Ctrl</kbd>+click (<kbd>Cmd</kbd>+click on a Mac) teleports you there.</span><span class="touch-only">Double-tap a place to teleport there.</span></p>
         <h3>Weather</h3>
         <p>Clouds, wind and rain come from a running weather simulation over the planet around you. Storm systems drift across, cumulus build into thunderheads with lightning, rain darkens the sky and rings the water, and the wind sways the trees, carries the falling leaves and raises the sea from ripples to long storm swells. The Weather tab can push the climate warmer, wetter, cloudier, stormier or hazier, and puts it back as simulated in one click.</p>
+        <p>The weather follows the day: mornings start clear, cumulus build as the land warms, thunderstorms break in the late afternoon and the sky settles at dusk. Lows in the middle latitudes bring fronts: high wisps of cirrus first, then a thickening grey deck and steady rain, and later a line of towering cloud and downpours with cold, clearer, gusty air behind it. Wind comes in gusts, and a storm sends a cold rush of air out ahead of its rain.</p>
+        <p>Rain or snow depends on how cold the air is, and the higher you climb the colder it gets. Snow settles while it falls and melts again in warm air and sun; above the snow line it lasts all season. Rain leaves the ground dark and shiny, with puddles in low spots, and it dries off afterwards. Fog drifts in off cold seas, gathers in the valleys after clear, calm nights and burns off in the morning sun, and on high ground a low wet sky wraps you in cloud. Showers can be seen as grey veils in the distance, and with the sun low behind you a rainbow can appear in the rain. The corner readout says what the weather is doing where you are.</p>
+        <h3>Sound</h3>
+        <p>You hear the rain on open ground and on the leaves above you, the wind rising and gusting, the trees rustling and the surf near the sea. Thunder rolls in after the flash, a few seconds later for every kilometre to the strike. Set the volume, or turn sound off, in the Weather tab.</p>
         <h3>Seasons and time</h3>
-        <p>Spring brings blossom and fresh leaves, summer deep green, autumn scarlet and gold with leaves drifting down, and winter bare branches with snow falling. The sun and moon cross the sky on a day of a set length, with stars at night; you can stop the clock or step it an hour at a time.</p>
+        <p>Spring brings blossom and fresh leaves, summer deep green, autumn scarlet and gold with leaves drifting down, and winter bare branches, snow wherever it is cold enough. The sun and moon cross the sky on a day of a set length, with stars at night; you can stop the clock or step it an hour at a time.</p>
         <h3>Looks and sharing</h3>
         <p>Four looks (Cinematic, Painted, Ink and Retro) change how the frame is graded. The World tab can share the spot you are standing on as a short code or link with the seed, view, time, season and weather, so someone else can open exactly that view.</p>
       </section>
@@ -334,6 +339,7 @@ body.flying #touchui #t-down { display: block; }
         <div class="controls">
           <div class="row"><label for="tod">Time of day <output id="tod-v"></output></label><input id="tod" type="range" min="0" max="23.9" step="0.1"></div>
           <div class="row"><label for="daylen">Day length <output id="daylen-v"></output></label><input id="daylen" type="range" min="0" max="60" step="5"></div>
+          <div class="row"><label for="volume">Sound <output id="volume-v"></output></label><input id="volume" type="range" min="0" max="1" step="0.05"></div>
           <div class="label">Climate</div>
           <div class="row"><label for="wind">Wind strength <output id="wind-v"></output></label><input id="wind" type="range" min="0" max="3" step="0.1"></div>
           <div class="row"><label for="envTemp">Temperature <output id="envTemp-v"></output></label><input id="envTemp" type="range" min="-20" max="20" step="1"></div>
