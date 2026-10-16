@@ -1230,9 +1230,10 @@ function handleJob(m) {
     const biome = PL.biome.slice();
     // raw fields for the map's study views (plates, rain, temperature, drainage, rivers)
     // (sst: sea-surface temperature with the ocean currents, °C; tAmp: half the yearly temperature swing;
-    // rJul/rJan: rain in northern summer and winter; moist: 0 parched .. 0.5 rain matches evaporation .. 1 wet)
+    // rJul/rJan: rain in northern summer and winter; moist: 0 parched .. 0.5 rain matches evaporation .. 1 wet;
+    // dep: how much eroded rock settled in each cell)
     const L = { elev: Float32Array.from(PL.elev), rain: Float32Array.from(PL.rain), temp: Float32Array.from(PL.temp), acc: Float32Array.from(PL.acc), lake: Float32Array.from(PL.lake), plate: Int32Array.from(PL.plate),
-      sst: Float32Array.from(PL.sst), tAmp: Float32Array.from(PL.tAmp), rJul: Float32Array.from(PL.rJul), rJan: Float32Array.from(PL.rJan), moist: Float32Array.from(PL.moist), salt: Uint8Array.from(PL.salt) };
+      sst: Float32Array.from(PL.sst), tAmp: Float32Array.from(PL.tAmp), rJul: Float32Array.from(PL.rJul), rJan: Float32Array.from(PL.rJan), moist: Float32Array.from(PL.moist), salt: Uint8Array.from(PL.salt), dep: Float32Array.from(PL.dep) };
     postMessage({ type: 'planet', gen: m.gen, seed: m.seed, PW, PH, PCELL, ys, riv, lk, tmp, biome, L },
       [ys.buffer, riv.buffer, lk.buffer, tmp.buffer, biome.buffer, ...Object.values(L).map(a => a.buffer)]);
     return;

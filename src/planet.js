@@ -756,7 +756,7 @@ function simulatePlanet(seed, progress = () => {}) {
   // its surface. Where that falls short the lake shrinks below its rim, or dries out into a flat
   // salt pan, and nothing flows on out of the basin.
   // (evaporation in the same units as rain: from open water, and the most the land could give up)
-  const petW = T => 0.02 * Math.max(0, T + 5), petL = T => 0.015 * Math.max(0.5, T + 5);
+  const petW = T => 0.02 * Math.max(0, T + 5), petL = T => 0.004 * Math.max(1, T + 5);
   const arid = new Float32Array(PN), moist = new Float32Array(PN);
   for (let k = 0; k < PN; k++) {
     if (elev[k] <= 0) { moist[k] = 1; continue; }
