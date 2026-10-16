@@ -60,7 +60,7 @@ function setSeed(s) {
       let lo = 0, hi = lr.length;
       while (lo < hi) { const m = (lo + hi) >> 1; if (lr[m] < PL.rain[k]) lo = m + 1; else hi = m; }
       rainN[k] = lr.length ? lo / lr.length : 0.5;
-      wetF[k] = PL.elev[k] > 0 && (isRiverCell(k) || lakeY[k] > 0) ? 1 : 0;
+      wetF[k] = PL.elev[k] > 0 && (isMainRiver(k) || lakeY[k] > 0) ? 1 : 0;
     }
     const tmp = new Float32Array(PN);
     for (let pass = 0; pass < 3; pass++) {
@@ -74,8 +74,8 @@ function setSeed(s) {
     }
   }
   segCache.clear();
+  buildDeltas(); // (before the levels: the brooks' levels read the river mouths' channels)
   computeLevels();
-  buildDeltas();
 }
 function hash(x, z, s) {
   let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263) + Math.imul(s + seed, 1013904223)) | 0;
@@ -202,9 +202,14 @@ function baseHeight(x, z) {
 // bends through a noisy midpoint, so channels meander instead of following the grid. The water
 // level is the planet's (monotone) drainage surface, so a river only ever steps down, and big
 // steps become waterfalls.
-const RIVER_MIN = RIVER_MIN_PLANET;
-// (half-width in blocks: a brook is about 3 wide, the great rivers of a continent 25-30)
-const riverWidth = a => Math.min(16, Math.max(1.2, 1.4 + Math.sqrt(Math.max(0, a - RIVER_MIN) / RIVER_MIN) * 1.25));
+// Headwater brooks: well before a cell gathers enough water for a river, a thin brook already
+// trickles down the hillside from a spring high on the slope, so a river doesn't appear out of
+// nowhere halfway down a valley. Brooks are one or two blocks wide and cut only a small notch.
+const RIVER_MIN = RIVER_MIN_PLANET, BROOK_MIN = 0.9, BROOK_AREA = 3, BROOK_R = 14;
+// (half-width in blocks: a brook is 1-2 wide, a stream about 3, the great rivers of a continent 25-30;
+// a brook never gets narrower than 0.8 so it stays one connected channel on the diagonals)
+const riverWidth = a => a < RIVER_MIN ? 0.8 + 0.4 * Math.max(0, a - BROOK_MIN) / (RIVER_MIN - BROOK_MIN)
+  : Math.min(16, Math.max(1.2, 1.4 + Math.sqrt(Math.max(0, a - RIVER_MIN) / RIVER_MIN) * 1.25));
 const bankW = w => 3 + w * 1.4;
 // how far from a channel valley walls can reach; level drops at least this big stay waterfalls
 const VALLEY_R = 52, FALL_STEP = 3, PEAK = CH - 40;
@@ -218,32 +223,60 @@ const riverPt = (ci, cj) => {
 };
 // A river's water level sits just below the lowest ground around its river point (so it never
 // runs perched above the land beside it) and never rises downstream.
-const riverLV = new Float32Array(PN);
+// A brook follows the ground as it is after the big rivers' valleys have been cut into it, so
+// near a river it runs down the valley side into it instead of being left perched up there.
+const riverLV = new Float32Array(PN), levels2 = new Float32Array(PN), outLV = new Float32Array(PN); // (outLV: where a brook meets its river)
+let carveLevels = false;
 function ownLevel(k) {
   if (PL.elev[k] <= 0) return WL;
   if (lakeY[k]) return Math.max(WL, lakeY[k]);
   let y = cellY[k];
   if (isRiverCell(k)) {
     const i = k % PW, [x, z] = riverPt(i, (k - i) / PW);
-    for (const [dx, dz] of [[0, 0], [6, 0], [-6, 0], [0, 6], [0, -6]]) y = Math.min(y, rawHeight(x + dx, z + dz));
-    y = Math.max(y, cellY[k] - 6);
+    const near = carveLevels && !isMainRiver(k) ? mainSegsNear(x - 6, z - 6, x + 6, z + 6) : null;
+    const g = (x, z) => near ? mainCarve(near, x, z, rawHeight(x, z)) : rawHeight(x, z);
+    for (const [dx, dz] of [[0, 0], [6, 0], [-6, 0], [0, 6], [0, -6]]) y = Math.min(y, g(x + dx, z + dz));
+    y = Math.max(y, (near ? Math.min(cellY[k], g(x, z)) : cellY[k]) - 6);
   }
   return Math.max(WL, Math.floor(y) - 1);
 }
-function computeLevels() {
-  riverLV.fill(-1);
+function levelPass(out) {
+  out.fill(-1);
   const stack = [];
   for (let k = 0; k < PN; k++) {
     let c = k;
-    while (riverLV[c] < 0) { stack.push(c); const r = PL.recv[c]; if (r < 0 || PL.elev[c] <= 0) break; c = r; }
+    while (out[c] < 0) { stack.push(c); const r = PL.recv[c]; if (r < 0 || PL.elev[c] <= 0) break; c = r; }
     while (stack.length) {
       const q = stack.pop(), r = PL.recv[q];
-      riverLV[q] = Math.max(ownLevel(q), r >= 0 && PL.elev[q] > 0 ? riverLV[r] : -1);
+      // (the main rivers keep their first-pass levels: they never depend on the brooks)
+      const own = carveLevels && isMainRiver(q) ? riverLV[q] : ownLevel(q);
+      let down = r >= 0 && PL.elev[q] > 0 ? out[r] : -1;
+      // a brook ends in the river's water where it meets it, which can lie below the river
+      // cell's own level (at a mouth, the delta runs at sea level)
+      if (carveLevels && down >= 0 && isRiverCell(q) && !isMainRiver(q) && isMainRiver(r)) {
+        const ri = r % PW, [bx, bz] = riverPt(ri, (r - ri) / PW);
+        const wB = mainCarve(mainSegsNear(bx, bz, bx, bz), bx, bz, 1e6);
+        if (wB < down) down = Math.max(WL, Math.floor(wB));
+        outLV[q] = down;
+      }
+      out[q] = Math.max(own, down);
     }
   }
 }
+function computeLevels() {
+  // first every level from the bare ground, which settles the main rivers and their valleys;
+  // then the brooks again over the ground with those valleys cut in (riverLV keeps the first
+  // pass meanwhile: the main-river segments read it)
+  carveLevels = false; segCache.clear(); levelPass(riverLV);
+  outLV.fill(-1);
+  carveLevels = true; levelPass(levels2); carveLevels = false;
+  riverLV.set(levels2);
+  segCache.clear();
+}
 const cellLevel = k => riverLV[k];
-const isRiverCell = k => PL.elev[k] > 0 && PL.acc[k] >= RIVER_MIN && PL.area[k] >= RIVER_AREA && !(lakeY[k] && PL.recv[k] >= 0 && lakeY[PL.recv[k]]);
+const isRiverCell = k => PL.elev[k] > 0 && PL.acc[k] >= BROOK_MIN && PL.area[k] >= BROOK_AREA && !(lakeY[k] && PL.recv[k] >= 0 && lakeY[PL.recv[k]]);
+// a real river (not a headwater brook): these carve the big valleys, feed the forests and show on the map
+const isMainRiver = k => isRiverCell(k) && PL.acc[k] >= RIVER_MIN && PL.area[k] >= RIVER_AREA;
 function cellSegs(ci, cj) {
   const key = ci * 8192 + cj;
   let out = segCache.get(key);
@@ -272,7 +305,7 @@ function cellSegs(ci, cj) {
       const ex = B[0] - A[0], ez = B[1] - A[1], len = Math.hypot(ex, ez) || 1;
       const off = (hash(ci, cj, 53) - 0.5) * 3;
       const M = [(-U[0] + 9 * A[0] + 9 * B[0] - C[0]) / 16 - ez / len * off, (-U[1] + 9 * A[1] + 9 * B[1] - C[1]) / 16 + ex / len * off];
-      const L = cellLevel(k), Lr = cellLevel(r);
+      const brook = !isMainRiver(k), L = cellLevel(k), Lr = brook && outLV[k] >= 0 ? outLV[k] : cellLevel(r);
       const w = riverWidth(PL.acc[k]);
       // a big drop is a waterfall, small ones become a sloping run
       const fall = L - Lr >= FALL_STEP, Le = fall ? L : Lr;
@@ -284,10 +317,11 @@ function cellSegs(ci, cj) {
         if (PL.recv[kk] === k && isRiverCell(kk)) { spring = false; if (cellLevel(kk) - L >= FALL_STEP) plunge = true; }
       }
       // meanders: two more bend points pushed sideways by smooth noise, more for wider rivers
-      const amp = 3 + Math.min(w, 8) * 1.1;
+      // (brooks wander in tighter wiggles round the bumps of the hillside)
+      const amp = brook ? 5 : 3 + Math.min(w, 8) * 1.1, wl = brook ? 13 : 23;
       const bend = (P0, P1) => {
         const mx = (P0[0] + P1[0]) / 2, mz = (P0[1] + P1[1]) / 2, dx = P1[0] - P0[0], dz = P1[1] - P0[1], l = Math.hypot(dx, dz) || 1;
-        const o = nD(mx / 23, mz / 23) * amp;
+        const o = nD(mx / wl, mz / wl) * amp;
         return [mx - dz / l * o, mz + dx / l * o];
       };
       const Q1 = bend(A, M), Q2 = bend(M, B), pts = [A, Q1, M, Q2, B];
@@ -296,23 +330,75 @@ function cellSegs(ci, cj) {
       // of running on at its old height across the valley floor, held up by banks (which left
       // walls and pillars standing in the valleys).
       const lv = [L, 0, 0, 0, Lr];
+      // (a brook reads the ground with the rivers' valleys already cut in, like its level)
+      let near = null;
+      if (brook) {
+        const xs = pts.map(p => p[0]), zs = pts.map(p => p[1]);
+        near = mainSegsNear(Math.min(...xs) - 5, Math.min(...zs) - 5, Math.max(...xs) + 5, Math.max(...zs) + 5);
+      }
+      const gr = (x, z) => near ? mainCarve(near, x, z, rawHeight(x, z)) : rawHeight(x, z);
       for (let n = 1; n < 4; n++) {
         const [x, z] = pts[n];
-        let g = rawHeight(x, z);
-        for (const [dx, dz] of [[5, 0], [-5, 0], [0, 5], [0, -5]]) g = Math.min(g, rawHeight(x + dx, z + dz));
+        let g = gr(x, z);
+        for (const [dx, dz] of [[5, 0], [-5, 0], [0, 5], [0, -5]]) g = Math.min(g, gr(x + dx, z + dz));
         lv[n] = Math.max(Lr, Math.min(lv[n - 1], L + (Le - L) * n / 4, Math.floor(g) - 1));
       }
       for (let n = 0; n < 4; n++) {
         const [ax, az] = pts[n], [bx, bz] = pts[n + 1], l = Math.hypot(bx - ax, bz - az) || 1;
         const drop = lv[n] - lv[n + 1], f = drop >= FALL_STEP;
         out.push({ ax, az, bx, bz, L: lv[n], L2: f ? lv[n] : lv[n + 1], w, fx: (bx - ax) / l, fz: (bz - az) / l,
-          lip: f, plunge: n === 0 ? plunge : lv[n - 1] - lv[n] >= FALL_STEP, spring: spring && n === 0 });
+          lip: f, plunge: n === 0 ? plunge : lv[n - 1] - lv[n] >= FALL_STEP, spring: spring && n === 0, brook });
       }
     }
   }
   if (segCache.size > 20000) segCache.clear();
   segCache.set(key, out);
   return out;
+}
+// The main-river segments (no brooks) that can reach a box, for mainCarve.
+function mainSegsNear(x0, z0, x1, z1) {
+  const out = [], M = VALLEY_R + 16, mx = (x0 + x1) / 2;
+  const hit = g => !(Math.max(g.ax, g.bx) < x0 - M || Math.min(g.ax, g.bx) > x1 + M || Math.max(g.az, g.bz) < z0 - M || Math.min(g.az, g.bz) > z1 + M);
+  for (const g of deltaSegs) {
+    if (g.brook) continue;
+    const sh = Math.round((mx - g.ax) / PLANET_X) * PLANET_X, q = sh ? { ...g, ax: g.ax + sh, bx: g.bx + sh } : g;
+    if (hit(q)) out.push(q);
+  }
+  const c0x = Math.floor((x0 - M) / PCELL) - 2, c1x = Math.floor((x1 + M) / PCELL) + 2;
+  const c0z = Math.max(0, Math.floor((z0 - M) / PCELL) - 2), c1z = Math.min(PH - 1, Math.floor((z1 + M) / PCELL) + 2);
+  for (let cj = c0z; cj <= c1z; cj++)
+    for (let ci = c0x; ci <= c1x; ci++) {
+      if (!isMainRiver(pcell(ci, cj))) continue;
+      for (const g of cellSegs(ci, cj)) if (hit(g)) out.push(g);
+    }
+  return out;
+}
+// Ground height h at (x, z) after the main rivers' channels, banks and valley walls are cut
+// into it: the same cuts heightAt makes, without the brooks.
+function mainCarve(sg, x, z, h) {
+  let bank = null, bankD = Infinity, bt = 0, near = -1, vw = 0, vl = 0, coreL = Infinity;
+  for (const s of sg) {
+    const ex = s.bx - s.ax, ez = s.bz - s.az;
+    let t = ((x - s.ax) * ex + (z - s.az) * ez) / (ex * ex + ez * ez);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const d = Math.hypot(x - (s.ax + ex * t), z - (s.az + ez * t)), lv = s.L + (s.L2 - s.L) * t;
+    if (d < s.w) { coreL = Math.min(coreL, Math.round(lv)); continue; }
+    if (d - s.w < bankD) { bankD = d - s.w; bank = s; bt = t; }
+    if (d < s.w + 2.5) near = Math.max(near, Math.round(lv));
+    if (d - s.w < 30) { const k = Math.exp(-(d - s.w) / 5); vw += k; vl += k * lv; }
+  }
+  if (coreL < Infinity) return Math.min(h, coreL);
+  if (!bank) return h;
+  const bankL = Math.max(near, Math.round(bank.L + (bank.L2 - bank.L) * bt));
+  if (bankD < bankW(bank.w) && h > bankL + 1) { let t = bankD / bankW(bank.w); t = t * t * (3 - 2 * t); h = bankL + 1 + t * (h - bankL - 1); }
+  if (bankD < VALLEY_R) {
+    const L = bankD < 2.5 || !vw ? bankL : vl / vw, fp = Math.max(0, bank.w - 2) * 2.2;
+    const slope = (0.42 + 0.5 / (1 + bank.w * 0.6)) * (0.8 + 0.4 * (nC(x / 31, z / 31) * 0.5 + 0.5));
+    const cap = L + 1 + Math.max(0, bankD - fp) * slope;
+    let f = (VALLEY_R - bankD) / 18; f = f > 1 ? 1 : f * f * (3 - 2 * f);
+    if (cap < h) h -= (h - cap) * 0.92 * f;
+  }
+  return h;
 }
 // Deltas: a big river reaching the sea splits a little upstream into distributaries that fan
 // out across the flat sediment plain the planet laid down at its mouth.
@@ -344,7 +430,7 @@ function buildDeltas() {
     // branch like a tree instead of bursting from one pool. Each arm keeps its own bearing at
     // first, then increasingly follows the land down to the coast, and runs on until it is out
     // in open water (one step past the shore, so it breaks through the beach).
-    const a = PL.acc[k], depth = a >= DELTA_MIN * 3 ? 2 : a >= DELTA_MIN ? 1 : 0;
+    const a = PL.acc[k], depth = a >= DELTA_MIN * 3 ? 2 : a >= DELTA_MIN ? 1 : 0, brook = !isMainRiver(k);
     const base = Math.atan2(fz, fx);
     const sea = (x, z) => baseHeight(x, z) < Math.max(WL, lakeAt(x, z)); // open sea or a lake
     const sl = 7;
@@ -364,11 +450,11 @@ function buildDeltas() {
         const ang = base + Math.max(-1.3, Math.min(1.3, rel)); // never loop back upstream
         hx = Math.cos(ang); hz = Math.sin(ang);
         const qx = x + hx * sl, qz = z + hz * sl;
-        deltaSegs.push({ ax: x, az: z, bx: qx, bz: qz, L: WL, L2: WL, w, fx: hx, fz: hz, lip: false, plunge: false, spring: false });
+        deltaSegs.push({ ax: x, az: z, bx: qx, bz: qz, L: WL, L2: WL, w, fx: hx, fz: hz, lip: false, plunge: false, spring: false, brook });
         x = qx; z = qz;
         if (sea(x, z)) {
           // one more step so the channel cuts through the shore into the open water
-          deltaSegs.push({ ax: x, az: z, bx: x + hx * sl, bz: z + hz * sl, L: WL, L2: WL, w, fx: hx, fz: hz, lip: false, plunge: false, spring: false });
+          deltaSegs.push({ ax: x, az: z, bx: x + hx * sl, bz: z + hz * sl, L: WL, L2: WL, w, fx: hx, fz: hz, lip: false, plunge: false, spring: false, brook });
           return;
         }
         if (t === splitAt) {
@@ -389,7 +475,7 @@ function prepareRivers(x0, z0, x1, z1) {
   // chunk sees the same valleys)
   const M = VALLEY_R + 16, mx = (x0 + x1) / 2;
   for (const g of deltaSegs) {
-    const sh = Math.round((mx - g.ax) / PLANET_X) * PLANET_X, m = M;
+    const sh = Math.round((mx - g.ax) / PLANET_X) * PLANET_X, m = g.brook ? BROOK_R + 8 : M;
     if (Math.max(g.ax, g.bx) + sh < x0 - m || Math.min(g.ax, g.bx) + sh > x1 + m || Math.max(g.az, g.bz) < z0 - m || Math.min(g.az, g.bz) > z1 + m) continue;
     segs.push(sh ? { ...g, ax: g.ax + sh, bx: g.bx + sh } : g);
   }
@@ -398,7 +484,7 @@ function prepareRivers(x0, z0, x1, z1) {
   for (let cj = c0z; cj <= c1z; cj++)
     for (let ci = c0x; ci <= c1x; ci++)
       for (const g of cellSegs(ci, cj)) {
-        const m = M;
+        const m = g.brook ? BROOK_R + 8 : M; // a brook reaches no further than its notch
         if (Math.max(g.ax, g.bx) < x0 - m || Math.min(g.ax, g.bx) > x1 + m || Math.max(g.az, g.bz) < z0 - m || Math.min(g.az, g.bz) > z1 + m) continue;
         segs.push(g);
       }
@@ -407,10 +493,12 @@ function prepareRivers(x0, z0, x1, z1) {
 // spill into the main stream); otherwise the nearest bank.
 const RA = { core: false, L: 0, d: 0, w: 0, t: 0, s: null };
 const VAL = { s: null, d: Infinity, L: 0 }; // nearest channel outside the water, for valley carving
+const BRK = { s: null, d: Infinity, L: 0, near: -1, nd: Infinity }; // nearest brook, for its notch
 function riverAt(x, z) {
   let core = null, coreL = Infinity, bank = null, bankD = Infinity, ct = 0, cd = 0, bt = 0, near = -1;
   let bz = null, bzN = Infinity, bzD = 0, bzT = 0; // the channel whose bank zone this column is deepest inside
   let vw = 0, vl = 0; // valley floor level: nearby channels' levels blended by distance
+  let bb = null, bbD = Infinity, bbT = 0; // nearest brook, which cuts its own small notch
   for (const s of segs) {
     const ex = s.bx - s.ax, ez = s.bz - s.az;
     let t = ((x - s.ax) * ex + (z - s.az) * ez) / (ex * ex + ez * ez);
@@ -419,11 +507,15 @@ function riverAt(x, z) {
     const d = Math.sqrt(qx * qx + qz * qz);
     if (d < s.w) { const lv = Math.round(s.L + (s.L2 - s.L) * t); if (lv < coreL || (lv === coreL && d < cd)) { core = s; coreL = lv; ct = t; cd = d; } }
     else {
-      if (d - s.w < bankD) { bankD = d - s.w; bank = s; bt = t; }
       const nb = (d - s.w) / bankW(s.w);
       if (nb < bzN) { bzN = nb; bz = s; bzD = d - s.w; bzT = t; }
       // the highest water right next to this column, so a bank between two channels holds both
-      if (d < s.w + 2.5) near = Math.max(near, Math.round(s.L + (s.L2 - s.L) * t));
+      // (a brook steps down a block every few columns, and the water from each step spreads a
+      // thin sheet over the reach below it: its banks hold the top of the whole stretch)
+      if (d < s.w + 2.5) near = Math.max(near, s.brook ? Math.max(s.L, s.L2) : Math.round(s.L + (s.L2 - s.L) * t));
+      // (brooks stay out of the big valleys: they cut their own notch below)
+      if (s.brook) { if (d - s.w < bbD) { bbD = d - s.w; bb = s; bbT = t; } continue; }
+      if (d - s.w < bankD) { bankD = d - s.w; bank = s; bt = t; }
       if (d - s.w < 30) { const k = Math.exp(-(d - s.w) / 5); vw += k; vl += k * (s.L + (s.L2 - s.L) * t); }
     }
   }
@@ -431,6 +523,8 @@ function riverAt(x, z) {
   // (blending keeps the floodplain from stepping along straight lines where a river's level
   // changes from one stretch to the next; right beside the water the bank's own level holds)
   VAL.s = bank; VAL.d = bankD; VAL.L = bankD < 2.5 || !vw ? bankL : vl / vw;
+  BRK.near = near; BRK.nd = bankD < bbD ? bankD : bbD;
+  BRK.s = bb; BRK.d = bbD; BRK.L = bb ? Math.max(near, bb.L + (bb.L2 - bb.L) * bbT) : 0;
   if (core) { RA.core = true; RA.s = core; RA.L = coreL; RA.d = cd; RA.w = core.w; RA.t = ct; return RA; }
   // (judged per channel, so a narrow stream's thin bank never punches a hole in a big river's)
   if (bz && bzN < 1) { RA.core = false; RA.s = bz; RA.L = Math.max(near, Math.round(bz.L + (bz.L2 - bz.L) * bzT)); RA.d = bzD; RA.w = bz.w; RA.t = bzT; return RA; }
@@ -473,6 +567,15 @@ function heightAt(x, z) {
     let f = (VALLEY_R - VAL.d) / 18; f = f > 1 ? 1 : f * f * (3 - 2 * f);
     if (cap < h) h -= (h - cap) * 0.92 * f;
   }
+  // a brook sits in a small V-shaped notch of its own, a few blocks across, that fades into
+  // the hillside by BROOK_R
+  if (BRK.s && (!r || !r.core) && BRK.d < BROOK_R) {
+    const cap = BRK.L + 1 + BRK.d * (0.7 + 0.3 * (nC(x / 19, z / 19) * 0.5 + 0.5));
+    let f = (BROOK_R - BRK.d) / 8; f = f > 1 ? 1 : f * f * (3 - 2 * f);
+    if (cap < h) h -= (h - cap) * 0.85 * f;
+  }
+  // whatever cut the land down, the ground right beside running water stays a block above it
+  if ((!r || !r.core) && BRK.near >= 0 && BRK.nd < 2 && !(BRK.near <= WL && h < WL) && h < BRK.near + 1) h = BRK.near + 1;
   // a lake's shore: ground just outside the lake rises to its water level, so a lake whose
   // edge falls on lower land doesn't pour out over it
   if ((!r || !r.core) && !lakeAt(x, z)) {
@@ -1100,7 +1203,8 @@ function handleJob(m) {
     const ys = new Uint8Array(PN), riv = new Uint8Array(PN), lk = new Uint8Array(PN), tmp = new Int8Array(PN);
     for (let k = 0; k < PN; k++) {
       ys[k] = Math.max(0, Math.min(255, Math.round(cellY[k])));
-      riv[k] = isRiverCell(k) ? Math.min(255, Math.round(PL.acc[k] * 4)) : 0;
+      // (brooks are 1..8, rivers 9 and up)
+      riv[k] = isMainRiver(k) ? Math.max(9, Math.min(255, Math.round(PL.acc[k] * 4))) : isRiverCell(k) ? Math.max(1, Math.min(8, Math.round(PL.acc[k] * 4))) : 0;
       lk[k] = lakeY[k];
       tmp[k] = Math.max(-127, Math.min(127, Math.round(PL.temp[k])));
     }
