@@ -99,18 +99,22 @@ const GLSL_COMMON = `
 precision highp float; precision highp int; precision highp sampler2DShadow;
 uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uZenith; uniform vec3 uHorizon;
 uniform vec3 uCam; uniform float uFogDen; uniform float uTime; uniform float uEnc; uniform float uMist; uniform float uSeason; uniform float uNight; uniform float uRain;
-// weather on the ground: uWet how wet surfaces are (0..1); uSnow x fresh snow cover at the player's
-// ground, y that ground height, z the height above which the season's snow lies; uFog2 low fog
+// weather on the ground: uWet how wet surfaces are (0..1); uSnowMap the snow lying on the land
+// around the player, per weather cell (origin uSnowO): R the height (/2) above which the season's
+// snow lies, G the lower edge (/2) of fresh snow, B how much fresh snow there is; uFog2 low fog
 // (x density at its base, y base height, z how fast it thins upward); uRainVeil 1 when rain anywhere
 // on the cloud map is heavy enough to see from afar
-uniform float uWet; uniform vec4 uSnow; uniform vec4 uFog2; uniform float uRainVeil;
+uniform float uWet; uniform sampler2D uSnowMap; uniform vec2 uSnowO; uniform vec4 uFog2; uniform float uRainVeil;
 ${GLSL_HASH}
 float vn2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
   uint a=uint(int(i.x)*7919+int(i.y)*104729+977);
   return mix(mix(h1(a),h1(a+7919u),f.x),mix(h1(a+104729u),h1(a+112648u),f.x),f.y); }
-// how much snow lies on an upward face at height y
-float snowCover(float y){
-  return clamp(max(uSnow.x*smoothstep(uSnow.y-14.0,uSnow.y-3.0,y), smoothstep(uSnow.z,uSnow.z+12.0,y)),0.0,1.0);
+// how much snow lies on an upward face at p: it belongs to the land, so it stays where it fell
+// (the edges are roughened a little so they don't follow the contour lines exactly)
+float snowCover(vec3 p){
+  vec4 m=texture(uSnowMap,(p.xz/16.0-uSnowO)/128.0);
+  float y=p.y+(vn2(p.xz/9.0)-0.5)*5.0, lc=m.r*510.0, fe=m.g*510.0;
+  return clamp(max(m.b*smoothstep(fe-2.0,fe+4.0,y), smoothstep(lc,lc+12.0,y)),0.0,1.0);
 }
 vec3 skyCol(vec3 d){
   float h=clamp(d.y,0.0,1.0);
@@ -159,7 +163,10 @@ float cloudCover(vec2 xz){
   vec4 m=cloudMapLod(xz,vec2(0.0),3.0);
   float sim=mix(uCloudMean,m.r*m.r,e);
   float cov=0.28+0.36*smoothstep(0.05,0.85,sim);
-  return max(cov,smoothstep(0.3,0.85,m.b*e)*0.7);
+  // where it rains the cloud closes into a solid deck: read less blurred than the cover, so a storm
+  // or a front's rain band isn't averaged away into the fair-weather puffs around it
+  float rn=cloudMapLod(xz,vec2(0.0),2.0).b*e;
+  return max(cov,smoothstep(0.08,0.5,rn)*0.93);
 }
 // cloud thickness used to come from 2D noise here; since v65 the clouds are a 3D Nubis-style
 // volume (cDen below) and the terrain's cloud shadows read the same density.
@@ -237,15 +244,16 @@ vec3 outHDR(vec3 c){ return max(c,vec3(0.0))*uEnc; }
 float rainVeil(vec3 dir, float dist){
   if(uRainVeil<0.5 || uCloudSim<0.5 || uCloudOn<0.5) return 0.0;
   float od=0.0, t=110.0;
-  for(int i=0;i<6;i++){
+  for(int i=0;i<9;i++){
     if(t>dist) break;
     vec3 p=uCam+dir*t;
     if(p.y>CB) break;
     vec2 uv=cloudUV(p.xz);
     float e=smoothstep(0.0,0.15,uv.x)*smoothstep(1.0,0.85,uv.x)*smoothstep(0.0,0.15,uv.y)*smoothstep(1.0,0.85,uv.y);
-    float r=smoothstep(0.2,0.75,cloudMapLod(p.xz,vec2(0.0),2.0).b)*e;
-    od+=r*min(t*0.5,dist-t)*0.006;
-    t*=1.5;
+    // (well blurred, so a shaft has soft sides instead of a straight wall where the rain stops)
+    float r=smoothstep(0.08,0.5,cloudMapLod(p.xz,vec2(0.0),3.5).b)*e;
+    od+=r*min(t*0.35,dist-t)*0.0022;
+    t*=1.35;
   }
   return 1.0-exp(-od);
 }
@@ -375,7 +383,7 @@ void main(){
     vec3 st = b==27u ? W.x*vec3(0.42,0.60,0.20)+W.y*vec3(0.30,0.50,0.16)+W.z*vec3(0.66,0.56,0.28)+W.w*vec3(0.72,0.64,0.46)
                      : W.x*vec3(0.46,0.68,0.22)+W.y*vec3(0.38,0.56,0.18)+W.z*vec3(0.74,0.60,0.30)+W.w*vec3(0.68,0.62,0.44);
     vec3 c = hit==2 ? vec3(0.33,0.19,0.10)*(1.0-0.3*W.x) : st*(0.55+0.55*t);
-    c=mix(c,SNOWC,snowCover(vWorld.y)*0.5*smoothstep(0.55,1.0,t));
+    c=mix(c,SNOWC,snowCover(vWorld)*0.5*smoothstep(0.55,1.0,t));
     vec3 alb=pow(c,vec3(2.2));
     // thin stalks catch light from every side; soften the shadow so they don't self-shadow
     float sh=mix(1.0,shadowF(vLP),0.7)*cloudShade(vWorld);
@@ -449,7 +457,7 @@ void main(){
   } else c=vec3(1.0,0.0,1.0);
   // snow settles on every upward face and creeps over the top edge of sides: the season's lasting
   // snow above the snow line, and fresh snow wherever it has been snowing until it melts
-  float snowA=0.0, sc=snowCover(vWorld.y);
+  float snowA=0.0, sc=snowCover(vWorld);
   if(sc>0.0 && b!=25u && b!=26u){
     float spot=th(ch,tx/4+ivec2(3,11));
     // sides only creep on ground blocks; logs and leaves would show a band on every block
@@ -895,7 +903,7 @@ vec4 skyClouds(vec3 d){
     ls+=cDen(p+uSunDir*(s+700.0),foot+300.0,false,hq)*450.0;
     // rain darkens only the cloud it falls from: sampled where this sample is, blurred so a sharp
     // rain band in the sim cannot cut a hard-edged dark sheet across the sky
-    float rain=smoothstep(0.15,0.8,cloudMapLod(p.xz,vec2(0.0),3.0).b)*uCloudSim;
+    float rain=smoothstep(0.08,0.6,cloudMapLod(p.xz,vec2(0.0),2.0).b)*uCloudSim;
     float sigma=den*0.07*(1.0+1.5*rain), od=ls*0.07*(1.0+1.5*rain);
     // multiple scattering as octaves (Wrenninge 2013, Hillaire 2016): each one lets light through
     // more easily and scatters it more evenly, so thick cloud glows instead of going black

@@ -23,7 +23,11 @@ function createWeather(gl) {
   // (sea fog that drifts ashore, radiation fog over land), also carried by the wind.
   let ta = new Float32Array(NN), ta2 = new Float32Array(NN), fg = new Float32Array(NN), fg2 = new Float32Array(NN);
   const taF = new Float32Array(NN), coldSea = new Float32Array(NN), strat = new Float32Array(NN);
-  const px = new Uint8Array(NN * 4), px2 = new Uint8Array(NN * 2);
+  // snow on the ground, per cell and fixed to the land (not carried by the wind): sn how much fresh
+  // snow lies there (0..1) and snE the height its lower edge has reached (it falls down to where the
+  // air is near freezing and melts back uphill in warm air and sun)
+  const sn = new Float32Array(NN), snE = new Float32Array(NN), sn2 = new Float32Array(NN), snE2 = new Float32Array(NN);
+  const px = new Uint8Array(NN * 4), px2 = new Uint8Array(NN * 2), px3 = new Uint8Array(NN * 4);
   // lightning: candidate thunderstorm cells and the strike currently flashing
   let cbCells = [], cbW = 0, clock = 0, strike = null;
   let ox = 0, oz = 0, pl = null, storms = [], acc = 0, simT = 0, seasonOff = 0, ready = false;
@@ -48,6 +52,10 @@ function createWeather(gl) {
   // map: R cover, G tops, B rain; map2: R = cirrus, G = how convective the cloud is (0 stratus .. 1 cumulonimbus)
   const maps = [mkMap(gl.RGBA, gl.RGBA8, px, true), mkMap(gl.RGBA, gl.RGBA8, px, true)];
   const maps2 = [mkMap(gl.RG, gl.RG8, px2, true), mkMap(gl.RG, gl.RG8, px2, true)];
+  // snow map: R the height (/2) above which the season's snow lies, G the lower edge (/2) of fresh
+  // snow, B how much fresh snow; it stays put on the land, so it has its own origin
+  const snowMap = mkMap(gl.RGBA, gl.RGBA8, px3, false);
+  let snowO = [0, 0];
   let cur = 0, lastDt = 0.25;
   // grid origin and mean wind each map was made with
   const mapO = [[0, 0, 0, 0], [0, 0, 0, 0]];
@@ -214,7 +222,7 @@ function createWeather(gl) {
     }
   }
   function fillEquilibrium() {
-    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const n = j * N + i; q[n] = equilibrium(ox + i, oz + j) * 0.9; c[n] = 0; ci[n] = 0; ta[n] = 0; fg[n] = 0; }
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const n = j * N + i; q[n] = equilibrium(ox + i, oz + j) * 0.9; c[n] = 0; ci[n] = 0; ta[n] = 0; fg[n] = 0; sn[n] = 0; snE[n] = 999; }
   }
   function centreOn(x, z) {
     return [Math.floor(x / PC) - (N >> 1), Math.floor(z / PC) - (N >> 1)];
@@ -377,6 +385,17 @@ function createWeather(gl) {
       else fgT = (1 - cl) * calm * smooth01((hum - 0.45) / 0.35) * smooth01((-dT - 0.1) / 0.6) * (1 - dH) * (0.55 + 0.45 * wet[n]);
       const rate = fgT > fg[n] ? 0.006 : sea[n] ? 0.004 : 0.004 + 0.03 * dH;
       fg[n] += (fgT - fg[n]) * Math.min(1, rate * dt);
+      // fresh snow: where it rains, it snows on the ground above the height where the air is near
+      // freezing; that edge creeps down while it snows. Above freezing the edge melts back uphill,
+      // faster in the afternoon sun, and once it is well above the ground the snow is gone
+      const L0 = hgt[n] + (T - 0.5) / 0.25, p = Math.min(1, rainOut[n] * 4);
+      if (p > 0.05 && !sea[n]) {
+        if (sn[n] < 0.02) snE[n] = L0;
+        else if (L0 < snE[n]) snE[n] += (L0 - snE[n]) * Math.min(1, dt * 0.05);
+        if (L0 < hgt[n] + 90) sn[n] = Math.min(1, sn[n] + p * dt / 45);
+      }
+      if (L0 > snE[n]) snE[n] += Math.min(L0 - snE[n], dt * (1 + 3 * dH) / 60);
+      if (snE[n] > hgt[n] + 70) sn[n] = Math.max(0, sn[n] - dt / 600);
     }
   }
   function upload() {
@@ -398,6 +417,16 @@ function createWeather(gl) {
     gl.bindTexture(gl.TEXTURE_2D, maps2[cur]);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RG, gl.UNSIGNED_BYTE, px2);
     gl.generateMipmap(gl.TEXTURE_2D);
+    const e2 = y => Math.round(Math.min(255, Math.max(0, y / 2)));
+    for (let n = 0; n < NN; n++) {
+      px3[n * 4] = e2(hgt[n] + (tmp[n] - 1) / 0.25);
+      px3[n * 4 + 1] = e2(snE[n]);
+      px3[n * 4 + 2] = Math.round(Math.min(1, sn[n]) * 255);
+      px3[n * 4 + 3] = 255;
+    }
+    snowO = [ox, oz];
+    gl.bindTexture(gl.TEXTURE_2D, snowMap);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, px3);
     // thunderstorm cells: towering, thick, raining hard and convective
     cbCells = []; cbW = 0;
     for (let n = 0; n < NN; n++) {
@@ -431,6 +460,11 @@ function createWeather(gl) {
     }
     let t = q; q = q2; q2 = t; t = c; c = c2; c2 = t; t = ci; ci = ci2; ci2 = t;
     t = ta; ta = ta2; ta2 = t; t = fg; fg = fg2; fg2 = t;
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const si = i + dx, sj = j + dz, n = j * N + i, inside = si >= 0 && sj >= 0 && si < N && sj < N;
+      sn2[n] = inside ? sn[si + sj * N] : 0; snE2[n] = inside ? snE[si + sj * N] : 999;
+    }
+    sn.set(sn2); snE.set(snE2);
     ox = nx; oz = nz;
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const n = j * N + i;
@@ -518,6 +552,9 @@ void main(){
     noise, mean, tex2, cloudBase: cloudNoise.base, cloudDetail: cloudNoise.detail,
     get meanCover() { return meanCover; }, get maxRain() { return maxRain; },
     get map() { return maps[cur]; }, get map2() { return maps2[cur]; },
+    get snowMap() { return snowMap; }, get snowOrigin() { return snowO; },
+    // fresh snow lying at a world position and height (0..1), for tests
+    snowAt(x, z, y) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return 0; const n = j * N + i; return sn[n] * smooth01((y - snE[n] + 2) / 6); },
     get mapPrev() { return maps[cur ^ 1]; }, get map2Prev() { return maps2[cur ^ 1]; },
     // the field is stepped four times a second; between steps each map slides on with the mean wind
     // so clouds and their shadows drift smoothly, and the older map (one step further along) fades

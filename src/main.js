@@ -1167,7 +1167,7 @@ function placeBlock() {
 // ---------- sun & sky ----------
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const env = { foliage: 1, seaWind: [0.8, 0.6, 1], rain: 0, flash: null, flashI: 0,
-  precip: 0, snowFrac: 0, snowFall: 0, snow: [0, 64, 999, 0], wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
+  precip: 0, snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
 let outflowT = 0, outflow = [0, 0, 0], snowAt = null;
 const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (((Math.floor(x) % HM) + HM) % HM)];
 // What the weather is doing where the player stands, and what it leaves on the ground.
@@ -1187,17 +1187,12 @@ function updateWeatherEnv(dt) {
   env.snowFrac += (sf - env.snowFrac) * Math.min(1, dt / 4);
   env.rain = env.precip * (1 - env.snowFrac);
   env.snowFall = env.precip * env.snowFrac;
-  // snow cover: reset to the local climate after a jump, then snowfall, melt and a slow drift back
-  const Tc = weather.ready ? weather.climateAt(x, z, gy) : 10;
-  const line = gy + (Tc - 1) / 0.25;
-  if (!snowAt || Math.hypot(x - snowAt[0], z - snowAt[1]) > 400) { env.snow[0] = smooth(1, -4, Tc) * 0.6; env.wet = 0; }
+  // snow cover lives in the weather sim, per cell of land (weather.snowMap); here only whether
+  // snow under the player is melting, which keeps the ground wet
+  if (!snowAt || Math.hypot(x - snowAt[0], z - snowAt[1]) > 400) env.wet = 0;
   snowAt = [x, z];
-  let fresh = env.snow[0] + env.snowFall * dt / 45;
-  if (T > 0.3) fresh -= (T - 0.3) * dt / 500 * (1 + (env.sunUp ? Math.max(0, env.sunEl) / 20 : 0));
-  else fresh += (smooth(1, -4, Tc) * 0.6 - fresh) * dt / 1500;
-  env.snow = [Math.min(1, Math.max(0, fresh)), gy, line, 0];
   // wetness: soaks in over a minute of rain, dries over several in sun and wind; melting snow wets
-  const melt = T > 0.3 && env.snow[0] > 0.02 ? 0.3 : 0;
+  const melt = T > 0.3 && weather.ready && weather.snowAt(x, z, gy) > 0.02 ? 0.3 : 0;
   if (env.rain > 0.05) env.wet = Math.min(1, env.wet + env.rain * dt / 35);
   else env.wet = Math.max(melt * 0.6, env.wet - dt / 420 * (0.3 + (env.sunUp ? Math.max(0, env.sunEl) / 25 : 0) + 0.3 * Math.min(2, env.windSpeed)));
   // low fog: thickest in the sim's fog cells; sea fog sits on the sea, land fog in the valleys
@@ -1336,7 +1331,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uZenith', env.zenith); setU(pr, 'uHorizon', env.horizon);
   setU(pr, 'uCam', eye); setU(pr, 'uTime', time);
   setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.precip + 0.6 * env.snowFall + 5 * env.hill) * Math.sqrt(settings.envFog));
-  setU(pr, 'uWet', env.wet); setU(pr, 'uSnow', env.snow); setU(pr, 'uFog2', env.fog2); setU(pr, 'uRainVeil', weather.ready && weather.maxRain > 0.25 ? 1 : 0);
+  setU(pr, 'uWet', env.wet); setI(pr, 'uSnowMap', 15); setU(pr, 'uSnowO', weather.snowOrigin); setU(pr, 'uFog2', env.fog2); setU(pr, 'uRainVeil', weather.ready && weather.maxRain > 0.25 ? 1 : 0);
   setU(pr, 'uAmbSky', env.ambSky); setU(pr, 'uAmbGround', env.ambGround);
   setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind);
   setU(pr, 'uEnc', post.enc);
@@ -1440,6 +1435,7 @@ function render(time, dt) {
   gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, weather.tex2);
   gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_3D, weather.cloudBase);
   gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_3D, weather.cloudDetail);
+  gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, weather.snowMap);
   post.beginScene();
   gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
 
