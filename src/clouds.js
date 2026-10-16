@@ -18,11 +18,17 @@ function createWeather(gl) {
   const hgt = new Float32Array(NN), tmp = new Float32Array(NN), sea = new Uint8Array(NN), wet = new Float32Array(NN);
   const rainOut = new Float32Array(NN), cvt = new Float32Array(NN), ciSrc = new Float32Array(NN), shield = new Float32Array(NN);
   let ci = new Float32Array(NN), ci2 = new Float32Array(NN);
+  // ta: how much warmer or colder the air is than the planet's climate (°C), carried by the wind:
+  // warm sectors and cold air behind fronts. taF: what the fronts push it toward. fg: low fog
+  // (sea fog that drifts ashore, radiation fog over land), also carried by the wind.
+  let ta = new Float32Array(NN), ta2 = new Float32Array(NN), fg = new Float32Array(NN), fg2 = new Float32Array(NN);
+  const taF = new Float32Array(NN), coldSea = new Float32Array(NN), strat = new Float32Array(NN);
   const px = new Uint8Array(NN * 4), px2 = new Uint8Array(NN * 2);
   // lightning: candidate thunderstorm cells and the strike currently flashing
   let cbCells = [], cbW = 0, clock = 0, strike = null;
   let ox = 0, oz = 0, pl = null, storms = [], acc = 0, simT = 0, seasonOff = 0, ready = false;
   const mean = [0, 0];
+  const smooth01 = x => { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); };
 
   // ---- GPU resources: the cloud map and a tiling 3D noise for the cloud shapes ----
   // Each map is kept twice: the last two simulation steps. The field steps four times a second and
@@ -142,17 +148,22 @@ function createWeather(gl) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
   }
   // mean cloud cover of the whole map, used for sky beyond the map's edge
-  let meanCover = 0.3;
+  let meanCover = 0.3, maxRain = 0;
 
   // ---- climate inputs ----
   const qsat = T => 0.5 * Math.exp(0.065 * T);
   const cellK = (gi, gj) => Math.min(PHc - 1, Math.max(0, gj)) * PWc + (((gi % PWc) + PWc) % PWc);
   const latDeg = gj => 90 - (gj + 0.5) / PHc * 180;
   function seasonTemp(gj) {
-    // summer warms the hemisphere it is summer in, winter cools it
-    const n = latDeg(gj) >= 0 ? 1 : -1;
+    // the chosen season is the player's own (as for the sun): summer warms the player's
+    // hemisphere and cools the other one, winter the other way round
+    const n = (latDeg(gj) >= 0 ? 1 : -1) * (latDeg(oz + (N >> 1)) >= 0 ? 1 : -1);
     return seasonOff * n * Math.min(1, Math.abs(latDeg(gj)) / 30);
   }
+  // the daily cycle: how strongly the sun heats the land right now (0 at night, 1 early afternoon),
+  // and how far the air is above or below its daily mean (warmest mid-afternoon, coldest before dawn)
+  const dayHeat = () => { const t = api.tod; return t > 8.5 && t < 18.5 ? Math.sin(Math.PI * (t - 8.5) / 10) : 0; };
+  const dayTemp = () => Math.cos(2 * Math.PI * (api.tod - 15) / 24);
   function equilibrium(gi, gj) {
     const k = cellK(gi, gj), T = pl.tmp[k] + seasonTemp(gj) + api.temp;
     const s = pl.L.elev[k] <= 0 || pl.ys[k] < 30;
@@ -179,8 +190,9 @@ function createWeather(gl) {
     // lows form mostly in the storm tracks around 40-60 degrees, a few over the warm tropics
     const trop = rnd() < 0.25;
     const la = (trop ? 8 + rnd() * 14 : 38 + rnd() * 24) * (rnd() < 0.5 ? 1 : -1);
+    // mid-latitude lows carry a warm and a cold front; tropical ones are round
     return { x: rnd() * PWc, z: (90 - la) / 180 * PHc, r: (trop ? 4 : 7) + rnd() * (trop ? 4 : 9),
-      s: 0.6 + rnd() * 0.9, age: anywhere ? rnd() : 0, life: 0.6 + rnd() * 0.8 };
+      s: 0.6 + rnd() * 0.9, age: anywhere ? rnd() : 0, life: 0.6 + rnd() * 0.8, fronts: !trop };
   }
   function staticFields() {
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
@@ -189,10 +201,20 @@ function createWeather(gl) {
       tmp[n] = pl.tmp[k] + seasonTemp(gj) + api.temp;
       sea[n] = pl.L.elev[k] <= 0 || pl.ys[k] < 30 ? 1 : 0;
       wet[n] = Math.min(1, pl.L.rain[k] / 2);
+      // cold currents run up the west coasts of the subtropics (the planet makes those coasts
+      // fog deserts): sea within a few cells west of land at 14-38 degrees is cold and breeds fog
+      coldSea[n] = 0;
+      const la = Math.abs(latDeg(gj));
+      if (sea[n] && la > 12 && la < 40) {
+        for (let d = 1; d <= 6; d++) {
+          const kk = cellK(gi + d, gj);
+          if (pl.L.elev[kk] > 0 && pl.ys[kk] >= 30) { coldSea[n] = Math.sin((la - 12) / 28 * Math.PI) * (1 - (d - 1) / 6); break; }
+        }
+      }
     }
   }
   function fillEquilibrium() {
-    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const n = j * N + i; q[n] = equilibrium(ox + i, oz + j) * 0.9; c[n] = 0; ci[n] = 0; }
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const n = j * N + i; q[n] = equilibrium(ox + i, oz + j) * 0.9; c[n] = 0; ci[n] = 0; ta[n] = 0; fg[n] = 0; }
   }
   function centreOn(x, z) {
     return [Math.floor(x / PC) - (N >> 1), Math.floor(z / PC) - (N >> 1)];
@@ -203,41 +225,79 @@ function createWeather(gl) {
   function winds() {
     const near = storms.filter(s => {
       let dx = s.x - (ox + N / 2); dx -= Math.round(dx / PWc) * PWc;
-      return Math.abs(dx) < N / 2 + s.r * 3 && Math.abs(s.z - (oz + N / 2)) < N / 2 + s.r * 3;
+      return Math.abs(dx) < N / 2 + s.r * 4 && Math.abs(s.z - (oz + N / 2)) < N / 2 + s.r * 4;
     });
+    // land convection follows the sun: nothing at night, building through the morning, strongest
+    // in the early afternoon, so cumulus grow toward midday and thunderstorms come late in the day
+    const heat = 0.15 + 1.45 * dayHeat();
     let mu = 0, mv = 0;
     for (let j = 0; j < N; j++) {
       prevailing(oz + j, pw);
       for (let i = 0; i < N; i++) {
         const n = j * N + i, gi = ox + i + 0.5, gj = oz + j + 0.5;
-        let wu = pw[0], wv = pw[1], up = 0, cs = 0, sh = 0;
+        let wu = pw[0], wv = pw[1], up = 0, cs = 0, sh = 0, fl = 0, fc = 0, ft = 0, st = 0, tf = 0;
         for (const s of near) {
           let dx = gi - s.x; dx -= Math.round(dx / PWc) * PWc;
           const dz = gj - s.z, rr = (dx * dx + dz * dz) / (s.r * s.r);
-          if (rr > 9) continue;
+          if (rr > 16) continue;
           const life = Math.sin(Math.PI * Math.min(1, s.age / s.life));
           const e = Math.exp(-rr), str = s.s * life * api.stormMul, hem = s.z < PHc / 2 ? 1 : -1;
-          const tang = str * 0.8 * e / s.r;
-          // counter-clockwise in the north, clockwise in the south, spiralling inward
-          wu += hem * dz * tang - dx * tang * 0.35; wv += -hem * dx * tang - dz * tang * 0.35;
-          // broad lift under the whole system, so it reads as one solid overcast shield rather than
-          // thin spiral arms with clear moats wound up by the vortex
-          up += str * Math.exp(-rr * 0.3) * 0.9;
-          // high cloud streams out ahead of and around the storm
-          cs += str * Math.exp(-rr * 0.22) * 0.55;
-          // the storm's cloud shield: one broad overcast with soft edges over the whole system
-          sh = Math.max(sh, Math.min(1, str * 1.2) * Math.exp(-rr * 0.18));
+          if (rr <= 9) {
+            const tang = str * 0.8 * e / s.r;
+            // counter-clockwise in the north, clockwise in the south, spiralling inward
+            wu += hem * dz * tang - dx * tang * 0.35; wv += -hem * dx * tang - dz * tang * 0.35;
+            // broad lift under the whole system, so it reads as one solid overcast shield rather than
+            // thin spiral arms with clear moats wound up by the vortex. A low with fronts keeps a
+            // smaller round core: the fronts carry its weather out to the sides.
+            const fr = s.fronts ? 0.55 : 1;
+            up += str * Math.exp(-rr * (s.fronts ? 0.6 : 0.3)) * 0.9 * fr;
+            // high cloud streams out ahead of and around the storm
+            cs += str * Math.exp(-rr * 0.22) * 0.55;
+            // the storm's cloud shield: one broad overcast with soft edges over the whole system
+            sh = Math.max(sh, Math.min(1, str * 1.2) * Math.exp(-rr * (s.fronts ? 0.45 : 0.18)));
+          }
+          if (s.fronts && str > 0.05) {
+            // Fronts, in cells. The low drifts east; seen from its centre the cold front trails
+            // toward the equator and bends back west, the warm front runs east and bends toward the
+            // equator, and the warm sector lies between them. Ahead of the warm front warm air
+            // slides up over the cold: a wide band of layered cloud and steady rain with cirrus far
+            // out in front. The cold front is a narrow line of towering cloud and downpours with
+            // cold, clearer, showery air behind it.
+            const R = s.r, sq = dz * hem;
+            const cf = sq > 0 ? smooth01(sq / (0.25 * R)) * (1 - smooth01((sq - 2.4 * R) / (0.8 * R))) : 0;
+            const dc = dx + 0.3 * sq + 0.08 * sq * sq / R;
+            const wf = dx > 0 ? smooth01(dx / (0.25 * R)) * (1 - smooth01((dx - 2.8 * R) / (0.9 * R))) : 0;
+            const dw = sq - 0.35 * dx - 0.05 * dx * dx / R;
+            if (cf > 0) {
+              const band = Math.exp(-(dc * dc) / 6.25) * cf * str;
+              fl += band * 1.5; fc = Math.max(fc, band * 0.9); ft = Math.max(ft, band * 0.75);
+              // behind it: cold air sinking, a few showers
+              const behind = dc < 0 ? cf * (1 - Math.exp(dc / 2)) * Math.exp(dc / (2.2 * R)) : 0;
+              tf -= behind * str * 6; fl -= behind * str * 0.35; fc = Math.max(fc, behind * 0.35);
+            }
+            if (wf > 0) {
+              const ahead = dw < 0 ? Math.exp(-((dw + 3.5) ** 2) / 14) : Math.exp(-(dw * dw) / 3);
+              fl += ahead * wf * str * 0.85; st = Math.max(st, ahead * wf * Math.min(1, str * 1.5));
+              cs += Math.exp(-((dw + 10) ** 2) / 20) * wf * str * 0.9;
+            }
+            // the warm sector between the two fronts
+            if (cf > 0 && wf > 0 && dc > 0 && dw > 0) tf += str * 3.5 * Math.min(cf, wf) * smooth01(dc / 2) * smooth01(dw / 2);
+          }
         }
         wu *= api.windMul; wv *= api.windMul;
         u[n] = wu; v[n] = wv;
         const xl = i > 0 ? hgt[n - 1] : hgt[n], xr = i < N - 1 ? hgt[n + 1] : hgt[n];
         const zl = j > 0 ? hgt[n - N] : hgt[n], zr = j < N - 1 ? hgt[n + N] : hgt[n];
         const oro = (wu * (xr - xl) + wv * (zr - zl)) * 0.5 * 0.045;
-        const conv = sea[n] ? 0 : Math.max(0, tmp[n] - 14) / 14 * 0.35;
+        // cold air behind a front over warm ground is unstable too, but only while the sun is up
+        const conv = sea[n] ? 0 : Math.max(0, tmp[n] + ta[n] - 14) / 14 * 0.35 * heat;
+        up += fl;
         lift[n] = Math.max(-0.7, Math.min(1.6, oro + up + conv));
-        tops[n] = Math.min(1, 0.18 + Math.max(0, up) * 0.45 + conv * 1.3 + Math.max(0, oro) * 0.3);
+        tops[n] = Math.min(1, 0.18 + Math.max(0, up) * 0.45 + conv * 1.3 + Math.max(0, oro) * 0.3 + ft);
         // convective share: hot land and storm cores bubble up, broad gentle lift stays layered
-        cvt[n] = Math.min(1, conv * 2.4 + Math.max(0, up - 0.3) * 1.1 + Math.max(0, oro - 0.2) * 0.5 + (sea[n] ? 0 : 0.15));
+        const cv = Math.min(1, conv * 2.4 + Math.max(0, up - fl - 0.3) * 1.1 + Math.max(0, oro - 0.2) * 0.5 + (sea[n] ? 0 : 0.15 * heat));
+        cvt[n] = Math.min(1, Math.max(cv * (1 - 0.75 * st), fc));
+        strat[n] = st; taF[n] = tf;
         ciSrc[n] = Math.min(0.9, cs); shield[n] = sh;
         if (Math.abs(i - N / 2) < 4 && Math.abs(j - N / 2) < 4) { mu += wu; mv += wv; }
       }
@@ -275,12 +335,20 @@ function createWeather(gl) {
       const eq = bx < 0 || bz < 0 || bx > N - 1.001 || bz > N - 1.001 ? equilibrium(ox + Math.round(bx), oz + Math.round(bz)) * 0.9 : 0;
       q2[n] = samp(q, bx, bz, eq); c2[n] = samp(c, bx, bz, 0);
       ci2[n] = samp(ci, i - u[n] * dt * ADV * 1.7, j - v[n] * dt * ADV * 1.7, 0);
+      ta2[n] = samp(ta, bx, bz, 0); fg2[n] = samp(fg, bx, bz, 0);
     }
     let t = q; q = q2; q2 = t; t = c; c = c2; c2 = t; t = ci; ci = ci2; ci2 = t;
+    t = ta; ta = ta2; ta2 = t; t = fg; fg = fg2; fg2 = t;
+    const dT = dayTemp(), dH = dayHeat();
     simT += dt;
     const ns = 0.11, sx = mean[0] * simT * CLOUD_ADV, sz = mean[1] * simT * CLOUD_ADV;
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-      const n = j * N + i, T = tmp[n];
+      const n = j * N + i;
+      // air temperature: the planet's climate, the air mass the wind brought (fronts) and the time
+      // of day (land swings more than sea, cloud cover damps the swing)
+      ta[n] += (taF[n] - ta[n]) * Math.min(1, dt * (Math.abs(taF[n]) > Math.abs(ta[n]) ? 0.02 : 0.004));
+      const cl = Math.min(1, c[n] * 2.6);
+      const T = tmp[n] + ta[n] + dT * (sea[n] ? 0.6 : 4.5 * (1 - 0.6 * cl));
       // the sea and wet forests give vapour back to the air
       const target = (sea[n] ? 0.85 : 0.35 + 0.4 * wet[n]) * qsat(T) * api.humid;
       q[n] += (target - q[n]) * (sea[n] ? 0.02 : 0.006) * dt;
@@ -300,6 +368,15 @@ function createWeather(gl) {
       const bg = Math.max(0, vnoise((ox + i - sx * 1.7) * 0.05, (oz + j - sz * 1.7) * 0.05) - 0.62) * 1.4;
       const tgt = Math.max(anvil, ciSrc[n] * (0.4 + 0.9 * turb), bg);
       ci[n] += (tgt - ci[n]) * (tgt > ci[n] ? 0.03 : 0.006) * dt;
+      // low fog. Over cold sea, moist and fairly calm air fogs up, thickest in the night and morning,
+      // and the wind carries it ashore. Over land on clear, calm nights the ground cools the air
+      // under it into radiation fog. The sun burns land fog off through the morning.
+      const sp = Math.hypot(u[n], v[n]), calm = 1 - smooth01((sp - 0.5) / 1.6), hum = Math.min(1, q[n] / (0.85 * qsat(T)));
+      let fgT = 0;
+      if (sea[n]) fgT = Math.min(1, coldSea[n] * 1.6 + Math.max(0, ta[n] - 2) * 0.12) * calm * smooth01((hum - 0.55) / 0.3) * (1 - 0.45 * dH);
+      else fgT = (1 - cl) * calm * smooth01((hum - 0.45) / 0.35) * smooth01((-dT - 0.1) / 0.6) * (1 - dH) * (0.55 + 0.45 * wet[n]);
+      const rate = fgT > fg[n] ? 0.006 : sea[n] ? 0.004 : 0.004 + 0.03 * dH;
+      fg[n] += (fgT - fg[n]) * Math.min(1, rate * dt);
     }
   }
   function upload() {
@@ -312,7 +389,7 @@ function createWeather(gl) {
       px2[n * 2] = Math.round(Math.min(1, ci[n]) * 255);
       px2[n * 2 + 1] = Math.round(cvt[n] * 255);
     }
-    { let t = 0; for (let n = 0; n < NN; n++) t += px[n * 4]; meanCover = t / NN / 255; }
+    { let t = 0, m = 0; for (let n = 0; n < NN; n++) { t += px[n * 4]; if (px[n * 4 + 2] > m) m = px[n * 4 + 2]; } meanCover = t / NN / 255; maxRain = m / 255; }
     cur ^= 1;
     mapO[cur] = [ox, oz, mean[0], mean[1]];
     gl.bindTexture(gl.TEXTURE_2D, maps[cur]);
@@ -346,17 +423,18 @@ function createWeather(gl) {
   }
   function shift(nx, nz) {
     const dx = nx - ox, dz = nz - oz;
-    for (const [a, b] of [[q, q2], [c, c2], [ci, ci2]]) {
+    for (const [a, b] of [[q, q2], [c, c2], [ci, ci2], [ta, ta2], [fg, fg2]]) {
       for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
         const si = i + dx, sj = j + dz, n = j * N + i;
         b[n] = si >= 0 && sj >= 0 && si < N && sj < N ? a[sj * N + si] : -1;
       }
     }
     let t = q; q = q2; q2 = t; t = c; c = c2; c2 = t; t = ci; ci = ci2; ci2 = t;
+    t = ta; ta = ta2; ta2 = t; t = fg; fg = fg2; fg2 = t;
     ox = nx; oz = nz;
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const n = j * N + i;
-      if (q[n] < 0) { q[n] = equilibrium(ox + i, oz + j) * 0.9; c[n] = 0; ci[n] = 0; }
+      if (q[n] < 0) { q[n] = equilibrium(ox + i, oz + j) * 0.9; c[n] = 0; ci[n] = 0; ta[n] = 0; fg[n] = 0; }
     }
     staticFields();
   }
@@ -431,12 +509,14 @@ void main(){
 
   const api = {
     windMul: 1,
+    // time of day in hours, set every frame: drives the daily cycle of heating, convection and fog
+    tod: 12,
     // environment knobs from the menu: temperature offset (°C), humidity, how readily air clouds
     // over, storm strength and how readily cloud rains out
     temp: 0, humid: 1, cloudy: 1, stormMul: 1, rainMul: 1,
     envChanged() { if (pl) staticFields(); },
     noise, mean, tex2, cloudBase: cloudNoise.base, cloudDetail: cloudNoise.detail,
-    get meanCover() { return meanCover; },
+    get meanCover() { return meanCover; }, get maxRain() { return maxRain; },
     get map() { return maps[cur]; }, get map2() { return maps2[cur]; },
     get mapPrev() { return maps[cur ^ 1]; }, get map2Prev() { return maps2[cur ^ 1]; },
     // the field is stepped four times a second; between steps each map slides on with the mean wind
@@ -449,7 +529,7 @@ void main(){
     reset(planet, seed, x, z, season) {
       pl = planet; ready = false;
       if (!pl || !pl.L) return;
-      seasonOff = [0, 6, 0, -8][season] || 0;
+      seasonOff = [0, 8, 0, -14][season] || 0;
       [ox, oz] = centreOn(x, z);
       seedStorms(seed);
       staticFields(); fillEquilibrium();
@@ -459,7 +539,7 @@ void main(){
       upload(); upload();
       ready = true; acc = 0;
     },
-    setSeason(season) { seasonOff = [0, 6, 0, -8][season] || 0; if (pl) staticFields(); },
+    setSeason(season) { seasonOff = [0, 8, 0, -14][season] || 0; if (pl) staticFields(); },
     update(dt, x, z) {
       if (!ready) return;
       const [cx, cz] = centreOn(x, z);
@@ -484,7 +564,7 @@ void main(){
     // rain falling at a world position (0..1)
     rainAt(x, z) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return 0; return px[(j * N + i) * 4 + 2] / 255; },
     cirrusAt(x, z) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return 0; return px2[(j * N + i) * 2] / 255; },
-    typeAt(x, z) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return null; const n = j * N + i; return { cover: px[n * 4] / 255, tops: tops[n], conv: cvt[n], rain: px[n * 4 + 2] / 255, cirrus: ci[n] }; },
+    typeAt(x, z) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return null; const n = j * N + i; return { cover: px[n * 4] / 255, tops: tops[n], conv: cvt[n], rain: px[n * 4 + 2] / 255, cirrus: ci[n], airMass: ta[n], front: taF[n], layered: strat[n], fog: fg[n] }; },
     // for tests: force a strike over the nearest thunderhead
     strikeNow(x, z, exact) {
       if (cbW <= 0) return null;
@@ -512,6 +592,43 @@ void main(){
     },
     storms() { return storms.map(s => ({ x: s.x, z: s.z, r: s.r, north: s.z < PHc / 2, str: s.s * api.stormMul * Math.sin(Math.PI * Math.min(1, s.age / s.life)) })); },
     cloudField() { return { ox, oz, N, px }; },
+    // air temperature (°C) at a world position and height: the cell's climate, the air mass the
+    // wind brought, the time of day, then 0.25 °C colder per block above the cell's ground
+    tempAt(x, z, y) {
+      const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz;
+      if (!pl) return 10;
+      if (i < 0 || j < 0 || i >= N || j >= N) { const gj = Math.floor(z / PC), k = cellK(Math.floor(x / PC), gj); return pl.tmp[k] + seasonTemp(gj) + api.temp - (y - Math.max(30, pl.ys[k])) * 0.25; }
+      const n = j * N + i, cl = Math.min(1, c[n] * 2.6);
+      return tmp[n] + ta[n] + dayTemp() * (sea[n] ? 0.6 : 4.5 * (1 - 0.6 * cl)) - (y - hgt[n]) * 0.25;
+    },
+    // the planet's own temperature here before the air mass and time of day, for snow cover
+    climateAt(x, z, y) { if (!pl) return 10; const gj = Math.floor(z / PC), k = cellK(Math.floor(x / PC), gj); return pl.tmp[k] + seasonTemp(gj) + api.temp - (y - Math.max(30, pl.ys[k])) * 0.25; },
+    // low fog (0..1) at a world position, bilinear between cells
+    fogAt(x, z) { return Math.max(0, samp(fg, x / PC - ox - 0.5, z / PC - oz - 0.5, 0)); },
+    // share of sea among the cells within r cells, for the sound of the surf
+    seaNear(x, z, r = 2) {
+      const i0 = Math.floor(x / PC) - ox, j0 = Math.floor(z / PC) - oz;
+      let s = 0, n = 0;
+      for (let j = j0 - r; j <= j0 + r; j++) for (let i = i0 - r; i <= i0 + r; i++) { if (i < 0 || j < 0 || i >= N || j >= N) continue; s += sea[j * N + i]; n++; }
+      return n ? s / n : 0;
+    },
+    // Thunderstorm outflow: rain-cooled air pours out of the base of a thunderstorm and spreads
+    // along the ground ahead of it as a gust front. Returns the gust [x, z] (in wind units) and how
+    // much colder that air is at a world position.
+    outflowAt(x, z) {
+      let gx = 0, gz = 0, cold = 0;
+      for (let k = 0; k < cbCells.length; k += 2) {
+        const n = cbCells[k], w = cbCells[k + 1];
+        const dx = x / PC - (ox + n % N + 0.5), dz = z / PC - (oz + ((n / N) | 0) + 0.5), d = Math.hypot(dx, dz);
+        if (d > 9) continue;
+        // strongest in a ring a few cells out from the cell, where the cold pool's edge is
+        const ring = Math.exp(-((d - 2.5) ** 2) / 5) * Math.min(1, w * 6) * 0.6;
+        gx += dx / (d || 1) * ring; gz += dz / (d || 1) * ring;
+        cold = Math.max(cold, Math.exp(-d * d / 12) * Math.min(1, w * 8));
+      }
+      const m = Math.hypot(gx, gz), lim = Math.min(m, 1.4) / (m || 1);
+      return [gx * lim, gz * lim, cold * 3];
+    },
     coverAt(x, z) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return 0; return px[(j * N + i) * 4] / 255; },
   };
   return api;

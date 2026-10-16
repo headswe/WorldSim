@@ -99,7 +99,19 @@ const GLSL_COMMON = `
 precision highp float; precision highp int; precision highp sampler2DShadow;
 uniform vec3 uSunDir; uniform vec3 uSunCol; uniform vec3 uZenith; uniform vec3 uHorizon;
 uniform vec3 uCam; uniform float uFogDen; uniform float uTime; uniform float uEnc; uniform float uMist; uniform float uSeason; uniform float uNight; uniform float uRain;
+// weather on the ground: uWet how wet surfaces are (0..1); uSnow x fresh snow cover at the player's
+// ground, y that ground height, z the height above which the season's snow lies; uFog2 low fog
+// (x density at its base, y base height, z how fast it thins upward); uRainVeil 1 when rain anywhere
+// on the cloud map is heavy enough to see from afar
+uniform float uWet; uniform vec4 uSnow; uniform vec4 uFog2; uniform float uRainVeil;
 ${GLSL_HASH}
+float vn2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  uint a=uint(int(i.x)*7919+int(i.y)*104729+977);
+  return mix(mix(h1(a),h1(a+7919u),f.x),mix(h1(a+104729u),h1(a+112648u),f.x),f.y); }
+// how much snow lies on an upward face at height y
+float snowCover(float y){
+  return clamp(max(uSnow.x*smoothstep(uSnow.y-14.0,uSnow.y-3.0,y), smoothstep(uSnow.z,uSnow.z+12.0,y)),0.0,1.0);
+}
 vec3 skyCol(vec3 d){
   float h=clamp(d.y,0.0,1.0);
   vec3 c=mix(uHorizon,uZenith,pow(h,0.5));
@@ -219,10 +231,44 @@ float cloudShade(vec3 p){
 }
 // scene passes write linear HDR; tonemapping happens in the post stack
 vec3 outHDR(vec3 c){ return max(c,vec3(0.0))*uEnc; }
+// Distant rain: grey shafts under raining cloud, so a shower can be seen coming across the land.
+// Six looks at the blurred rain map at fixed distances along the view ray (the rain right around
+// the player is drawn as streaks). Returns the opacity of the rain in front of a point dist away.
+float rainVeil(vec3 dir, float dist){
+  if(uRainVeil<0.5 || uCloudSim<0.5 || uCloudOn<0.5) return 0.0;
+  float od=0.0, t=110.0;
+  for(int i=0;i<6;i++){
+    if(t>dist) break;
+    vec3 p=uCam+dir*t;
+    if(p.y>CB) break;
+    vec2 uv=cloudUV(p.xz);
+    float e=smoothstep(0.0,0.15,uv.x)*smoothstep(1.0,0.85,uv.x)*smoothstep(0.0,0.15,uv.y)*smoothstep(1.0,0.85,uv.y);
+    float r=smoothstep(0.2,0.75,cloudMapLod(p.xz,vec2(0.0),2.0).b)*e;
+    od+=r*min(t*0.5,dist-t)*0.006;
+    t*=1.5;
+  }
+  return 1.0-exp(-od);
+}
+vec3 veilCol(){ return vec3(dot(uHorizon,vec3(0.3,0.5,0.2)))*0.32+uZenith*0.1+uSunCol*0.03; }
+// analytic exponential height fog: density k0 at height base, thinning by K per block upward
+float heightFog(vec3 dir, float dist, float k0, float base, float K){
+  float y0=max(uCam.y-base,-25.0), dy=dir.y;
+  float amt=k0*exp(-K*y0)*(abs(dy)>1e-3 ? (1.0-exp(-K*dist*dy))/(K*dy) : dist);
+  return 1.0-exp(-max(amt,0.0));
+}
+vec3 fogCol(vec3 dir){
+  float sa=pow(max(dot(dir,uSunDir),0.0),6.0);
+  vec3 g=vec3(dot(uHorizon,vec3(0.3,0.5,0.2)));
+  return mix(uHorizon,g,0.55)*1.05+uZenith*0.1+uSunCol*0.18*sa;
+}
 vec3 applyFog(vec3 c, vec3 wp){
   vec3 dv=wp-uCam; float dist=length(dv); vec3 dir=dv/max(dist,1e-4);
   float f=1.0-exp(-pow(dist*uFogDen,2.0));
   c=mix(c, skyCol(dir), clamp(f,0.0,1.0));
+  float rv=rainVeil(dir,dist);
+  if(rv>0.0) c=mix(c,veilCol(),rv*0.85);
+  // low fog: sea fog rolling in, or fog pooled in the valleys after a clear calm night
+  if(uFog2.x>0.0) c=mix(c,fogCol(dir),heightFog(dir,dist,uFog2.x,uFog2.y,uFog2.z));
   if(uMist>0.0){
     // analytic exponential height fog pooling in the valleys, lit by the low sun
     const float K=0.11;
@@ -329,7 +375,7 @@ void main(){
     vec3 st = b==27u ? W.x*vec3(0.42,0.60,0.20)+W.y*vec3(0.30,0.50,0.16)+W.z*vec3(0.66,0.56,0.28)+W.w*vec3(0.72,0.64,0.46)
                      : W.x*vec3(0.46,0.68,0.22)+W.y*vec3(0.38,0.56,0.18)+W.z*vec3(0.74,0.60,0.30)+W.w*vec3(0.68,0.62,0.44);
     vec3 c = hit==2 ? vec3(0.33,0.19,0.10)*(1.0-0.3*W.x) : st*(0.55+0.55*t);
-    c=mix(c,SNOWC,W.w*0.5*smoothstep(0.55,1.0,t));
+    c=mix(c,SNOWC,snowCover(vWorld.y)*0.5*smoothstep(0.55,1.0,t));
     vec3 alb=pow(c,vec3(2.2));
     // thin stalks catch light from every side; soften the shadow so they don't self-shadow
     float sh=mix(1.0,shadowF(vLP),0.7)*cloudShade(vWorld);
@@ -401,16 +447,29 @@ void main(){
   } else if(b==26u){
     c=mix(vec3(0.62,0.78,0.88),vec3(0.80,0.90,0.96),th(ch,tx/3));
   } else c=vec3(1.0,0.0,1.0);
-  // winter: snow settles on every upward face and creeps over the top edge of sides
-  if(W.w>0.0 && b!=25u && b!=26u){
+  // snow settles on every upward face and creeps over the top edge of sides: the season's lasting
+  // snow above the snow line, and fresh snow wherever it has been snowing until it melts
+  float snowA=0.0, sc=snowCover(vWorld.y);
+  if(sc>0.0 && b!=25u && b!=26u){
     float spot=th(ch,tx/4+ivec2(3,11));
     // sides only creep on ground blocks; logs and leaves would show a band on every block
     bool ground = b==1u||b==2u||b==4u||b==14u||b==15u;
     float cover = top ? 1.0 : side && ground && lp.y>0.86-0.12*n ? 0.85 : 0.0;
-    float amt=smoothstep(0.25,0.75,W.w*cover*(0.75+0.45*spot));
-    c=mix(c,SNOWC*(0.93+0.07*n),amt);
+    snowA=smoothstep(0.25,0.75,sc*cover*(0.75+0.45*spot));
+    c=mix(c,SNOWC*(0.93+0.07*n),snowA);
   }
   vec3 alb=pow(c,vec3(2.2));
+  // rain wets the world: soil, sand and bark darken, leaves a little, and in flat low spots of
+  // open ground water stands in puddles
+  float wetA=0.0, pud=0.0;
+  if(uWet>0.0 && b!=25u && b!=26u){
+    wetA=uWet*(1.0-snowA)*(top?1.0:0.65);
+    if(top && (b==1u||b==2u||b==3u||b==4u||b==14u||b==15u||b==16u)){
+      float pn=vn2(vWorld.xz*0.08)*0.65+vn2(vWorld.xz*0.27+17.0)*0.35;
+      pud=smoothstep(0.5,0.54,pn+0.1*(uWet-1.0))*smoothstep(0.35,0.8,uWet)*(1.0-snowA);
+    }
+    alb*=mix(1.0,leaf?0.82:b==4u?0.7:0.6,wetA);
+  }
   float sh=shadowF(vLP)*cloudShade(vWorld);
   float ndl=max(dot(N,uSunDir),0.0);
   float ao=0.3+0.7*vAO;
@@ -424,6 +483,22 @@ void main(){
     float ca=pow(max(0.0,1.0-abs(w1)*0.6),5.0)+pow(max(0.0,1.0-abs(w2)*0.6),5.0);
     float depth=31.0-vWorld.y;
     lit+=alb*uSunCol*ca*0.55*sh*exp(-depth*0.25)*max(N.y,0.3);
+  }
+  if(wetA>0.0){
+    // a wet sheen: the sky and sun reflected, strongest at grazing angles; puddles are mirrors,
+    // pocked by raindrops while it rains
+    vec3 V=normalize(vWorld-uCam), Nw=N;
+    if(pud>0.0 && uRain>0.02){
+      vec2 rq=vWorld.xz*2.2, rc=floor(rq);
+      float hh=h1(uint(int(rc.x)*7919+int(rc.y)*104729+51)), ph=fract(uTime*1.3+hh);
+      float dl=length(rq-rc-0.5), ring=sin((dl-ph*0.6)*30.0)*exp(-abs(dl-ph*0.6)*12.0)*(1.0-ph);
+      Nw=normalize(N+vec3(rq-rc-0.5,0.0).xzy*ring*0.5*step(hh,uRain*1.2));
+    }
+    vec3 R=reflect(V,Nw);
+    float fr=0.03+0.97*pow(1.0-max(dot(-V,Nw),0.0),5.0);
+    vec3 refl=skyCol(R)*mix(0.35,1.0,sh)+uSunCol*sh*pow(max(dot(R,uSunDir),0.0),pud>0.0?600.0:90.0)*(pud>0.0?6.0:1.5);
+    float k=wetA*0.3*(top?1.0:0.4)+pud;
+    lit=mix(lit*mix(1.0,0.55,pud),refl,clamp(fr*k,0.0,1.0));
   }
   lit=applyFog(lit,vWorld);
   o=vec4(outHDR(lit),1.0);
@@ -728,7 +803,21 @@ vec3 starField(vec3 d){
   col+=vec3(0.55,0.6,0.8)*band*smoothstep(0.25,0.85,cl)*0.07;
   return col;
 }
-uniform vec4 uFlash; uniform float uPixAng; uniform highp sampler3D uNoise3; uniform float uCloudQ;
+uniform vec4 uFlash; uniform float uPixAng; uniform highp sampler3D uNoise3; uniform float uCloudQ; uniform float uBow;
+// A rainbow: sunlight turned back by raindrops in a ring round the point opposite the sun, red
+// outside at about 42 degrees, violet inside; a fainter second bow at about 51 degrees with the
+// colours the other way round, and the sky between the two darker (Alexander's band).
+vec3 bowHue(float x){ float h=(1.0-clamp(x,0.0,1.0))*0.78; return clamp(abs(fract(h+vec3(0.0,2.0/3.0,1.0/3.0))*6.0-3.0)-1.0,0.0,1.0); }
+vec3 rainbow(vec3 d, out float dark){
+  float a=degrees(acos(clamp(dot(d,-uSunDir),-1.0,1.0)));
+  float x=(a-40.3)/2.2, y=(53.8-a)/3.4;
+  vec3 c=bowHue(x)*smoothstep(-0.25,0.1,x)*smoothstep(1.25,0.9,x);
+  c+=bowHue(y)*smoothstep(-0.25,0.1,y)*smoothstep(1.25,0.9,y)*0.4;
+  dark=smoothstep(41.0,42.5,a)*smoothstep(51.5,50.0,a);
+  // the sky inside the bow is a little brighter
+  c+=vec3(0.18)*smoothstep(40.5,25.0,a)*smoothstep(10.0,30.0,a);
+  return c;
+}
 // ---- clouds ----
 // Volumetric clouds: every sky pixel raymarches a 3D density through the cloud layer at full
 // resolution, marches toward the sun from each sample for self-shadowing, and scatters light with
@@ -853,13 +942,22 @@ void main(){
   c=mix(c,ci.rgb,ci.a);
   vec4 cl=skyClouds(d);
   c=mix(c,cl.rgb,cl.a);
+  // rain in the distance, rainbows in the rain, and low fog in front of it all
+  float rv=rainVeil(d,4000.0);
+  if(rv>0.0) c=mix(c,veilCol(),rv*0.85);
+  if(uBow>0.0 && d.y>-0.02){
+    float dk; vec3 rb=rainbow(d,dk);
+    float L=dot(uSunCol,vec3(0.3,0.5,0.2));
+    c=c*(1.0-0.12*dk*uBow)+rb*uBow*L*0.1*smoothstep(-0.02,0.04,d.y);
+  }
+  if(uFog2.x>0.0) c=mix(c,fogCol(d),heightFog(d,6000.0,uFog2.x,uFog2.y,uFog2.z));
   o=vec4(outHDR(c),1.0);
 }`;
 
 
 const VS_LEAF = `#version 300 es
 ${GLSL_COMMON}
-uniform mat4 uVP; uniform sampler2D uHeight; uniform sampler2D uEmit; uniform int uEmitCount; uniform int uEmitBase; uniform float uWind; uniform float uSnow; uniform float uFoam; uniform float uRainMode;
+uniform mat4 uVP; uniform sampler2D uHeight; uniform sampler2D uEmit; uniform int uEmitCount; uniform int uEmitBase; uniform float uWind; uniform float uSnowMode; uniform float uFoam; uniform float uRainMode;
 out vec2 vUV; out vec3 vCol; out float vLight; out vec3 vWorld;
 // Each instance belongs to one leaf block (an "emitter" with open air below), detaches,
 // tumbles down with the wind, settles flat on the ground or water, then fades and respawns.
@@ -902,7 +1000,7 @@ void main(){
     gl_Position=uVP*vec4(wp,1.0);
     return;
   }
-  if(uSnow>0.5){
+  if(uSnowMode>0.5){
     // snowfall: flakes wrap around a box that follows the camera
     vec3 box=vec3(56.0,34.0,56.0);
     vec3 p=vec3(a,c,b)*box;
@@ -970,7 +1068,7 @@ void main(){
 }`;
 const FS_LEAF = `#version 300 es
 ${GLSL_COMMON}
-uniform vec3 uAmbSky; uniform float uSnow; uniform float uFoam; uniform float uRainMode;
+uniform vec3 uAmbSky; uniform float uSnowMode; uniform float uFoam; uniform float uRainMode;
 in vec2 vUV; in vec3 vCol; in float vLight; in vec3 vWorld; out vec4 o;
 void main(){
   vec2 p=vUV;
@@ -979,7 +1077,7 @@ void main(){
     o=vec4(outHDR(applyFog(lit,vWorld)),(1.0-abs(p.x))*(0.55-0.35*abs(p.y))*0.6);
     return;
   }
-  if(uSnow>0.5||uFoam>0.5){
+  if(uSnowMode>0.5||uFoam>0.5){
     if(dot(p,p)>1.0) discard;
     vec3 lit=pow(vCol,vec3(2.2))*(uAmbSky*1.3+uSunCol*0.5);
     o=vec4(outHDR(applyFog(lit,vWorld)),1.0);

@@ -27,7 +27,7 @@ const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: tr
   cloudQ: matchMedia('(pointer: coarse)').matches ? 1 : 2, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
-const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
+const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, volume: 0.7, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
 try {
   const saved = JSON.parse(localStorage.getItem('emberwood.settings') || '{}');
   Object.assign(settings, saved);
@@ -230,6 +230,40 @@ const weather = createWeather(gl);
 const localWind = [0.7, 0.2], cloudWind = [0, 0];
 let cloudMean = 0.3;
 const cloudsOn = () => settings.fx.clouds && weather.ready;
+// ---------- sound ----------
+const audio = createAudio();
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(ev, () => { if (settings.volume > 0) audio.unlock(); }, { passive: true, capture: true });
+document.addEventListener('visibilitychange', () => audio.pause(document.hidden));
+// what is overhead (leaves, a roof) and how many trees are about, checked a few times a second
+const hear = { canopy: 0, roof: 0, trees: 0, t: 0 };
+function listenAround() {
+  const [x, y, z] = state.pos;
+  let leaf = 0, roof = 0;
+  for (let k = 2; k < 24; k++) {
+    const b = getBlock(Math.floor(x), Math.floor(y + k), Math.floor(z));
+    if (b >= 9 && b <= 13 || b === 29) { leaf = 1; continue; }
+    if (b && !isW(b) && b !== 27 && b !== 28) { roof = 1; break; }
+  }
+  hear.canopy += (leaf - hear.canopy) * 0.3; hear.roof = roof;
+  hear.trees = Math.min(1, emitCount / 600 + leaf * 0.4);
+}
+// a few words on the weather for the corner readout
+function weatherWords() {
+  if (!weather.ready) return '';
+  const [x, , z] = state.pos, ty = weather.typeAt(x, z);
+  const T = Math.round(env.temp), ms = Math.round(env.windSpeed * 6);
+  let sky = !ty ? '' : ty.cover < 0.2 ? 'clear' : ty.cover < 0.45 ? 'fair' : ty.cover < 0.75 ? 'cloudy' : 'overcast';
+  const p = env.precip;
+  if (p > 0.04) {
+    const kind = env.snowFrac > 0.75 ? 'snow' : env.snowFrac > 0.25 ? 'sleet' : 'rain';
+    sky = (p < 0.2 ? (kind === 'rain' ? 'drizzle' : 'light ' + kind) : p > 0.6 ? 'heavy ' + kind : kind);
+  }
+  if (ty && ty.tops > 0.66 && ty.conv > 0.45 && ty.cover > 0.7) sky += ', thunder';
+  if (env.fog2[0] > 0.008 || env.hill > 0.4) sky += ', fog';
+  if (env.bow > 0.3) sky += ', rainbow';
+  const wind = ms < 2 ? 'calm' : ms < 6 ? `light wind ${ms} m/s` : ms < 12 ? `breezy ${ms} m/s` : ms < 18 ? `strong wind ${ms} m/s` : `gale ${ms} m/s`;
+  return `${T} °C · ${sky} · ${wind}`;
+}
 gl.bindVertexArray(null);
 
 // ---------- math ----------
@@ -1132,7 +1166,69 @@ function placeBlock() {
 
 // ---------- sun & sky ----------
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-const env = { foliage: 1, seaWind: [0.8, 0.6, 1], rain: 0, flash: null, flashI: 0 };
+const env = { foliage: 1, seaWind: [0.8, 0.6, 1], rain: 0, flash: null, flashI: 0,
+  precip: 0, snowFrac: 0, snowFall: 0, snow: [0, 64, 999, 0], wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
+let outflowT = 0, outflow = [0, 0, 0], snowAt = null;
+const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (((Math.floor(x) % HM) + HM) % HM)];
+// What the weather is doing where the player stands, and what it leaves on the ground.
+// Precipitation falls as rain or snow by the air temperature at the player (sleet in between).
+// Fresh snow builds up while it snows and melts in warm air and sun; the season's lasting snow lies
+// above the height where the climate itself is below freezing. Rain wets the ground and it dries
+// in sun and wind. Low fog is the sim's fog field; walking up into low cloud on high ground is fog
+// too. A rainbow shows when the sun is low and behind you and rain is falling in front of you.
+function updateWeatherEnv(dt) {
+  const [x, y, z] = state.pos, on = weather.ready && cloudsOn();
+  const gy = Math.max(groundAt(x, z) || 0, 31);
+  const T = weather.ready ? weather.tempAt(x, z, gy) - outflow[2] : 10;
+  env.temp = T;
+  const r = on ? Math.min(1, Math.max(0, weather.rainAt(x, z) - 0.08) / 0.6) * (1 - smooth(290, 320, y)) : 0;
+  env.precip += (r - env.precip) * Math.min(1, dt / 3);
+  const sf = smooth(2.0, -0.5, T);
+  env.snowFrac += (sf - env.snowFrac) * Math.min(1, dt / 4);
+  env.rain = env.precip * (1 - env.snowFrac);
+  env.snowFall = env.precip * env.snowFrac;
+  // snow cover: reset to the local climate after a jump, then snowfall, melt and a slow drift back
+  const Tc = weather.ready ? weather.climateAt(x, z, gy) : 10;
+  const line = gy + (Tc - 1) / 0.25;
+  if (!snowAt || Math.hypot(x - snowAt[0], z - snowAt[1]) > 400) { env.snow[0] = smooth(1, -4, Tc) * 0.6; env.wet = 0; }
+  snowAt = [x, z];
+  let fresh = env.snow[0] + env.snowFall * dt / 45;
+  if (T > 0.3) fresh -= (T - 0.3) * dt / 500 * (1 + (env.sunUp ? Math.max(0, env.sunEl) / 20 : 0));
+  else fresh += (smooth(1, -4, Tc) * 0.6 - fresh) * dt / 1500;
+  env.snow = [Math.min(1, Math.max(0, fresh)), gy, line, 0];
+  // wetness: soaks in over a minute of rain, dries over several in sun and wind; melting snow wets
+  const melt = T > 0.3 && env.snow[0] > 0.02 ? 0.3 : 0;
+  if (env.rain > 0.05) env.wet = Math.min(1, env.wet + env.rain * dt / 35);
+  else env.wet = Math.max(melt * 0.6, env.wet - dt / 420 * (0.3 + (env.sunUp ? Math.max(0, env.sunEl) / 25 : 0) + 0.3 * Math.min(2, env.windSpeed)));
+  // low fog: thickest in the sim's fog cells; sea fog sits on the sea, land fog in the valleys
+  let fog = 0, base = 31;
+  if (on) {
+    fog = weather.fogAt(x, z);
+    const seaShare = weather.seaNear(x, z, 2);
+    let lo = gy;
+    for (let a = 0; a < 8; a++) { const h = groundAt(x + Math.cos(a * 0.785) * 56, z + Math.sin(a * 0.785) * 56); if (h > 0) lo = Math.min(lo, h); }
+    base = 31 + (Math.max(31, lo) + 5 - 31) * (1 - seaShare);
+  }
+  env.fog2[0] += (smooth(0.04, 0.45, fog) * 0.024 * settings.envFog ** 0.5 - env.fog2[0]) * Math.min(1, dt / 4);
+  env.fog2[1] += (base - env.fog2[1]) * Math.min(1, dt / 2);
+  // hill fog: up on high ground under a low, thick, wet sky the cloud sits on the hills
+  let hill = 0;
+  if (on) { const ty = weather.typeAt(x, z); if (ty) hill = smooth(72, 96, gy) * smooth(0.6, 0.9, ty.cover) * Math.max(smooth(0.1, 0.4, ty.rain), smooth(0.2, 0.6, ty.layered)); }
+  env.hill += (hill - env.hill) * Math.min(1, dt / 5);
+  // rainbow
+  let bow = 0;
+  if (on && env.sunUp && env.sunEl > 0 && env.sunEl < 42 && env.rain < 0.75) {
+    const sd = env.sunDir, h = Math.hypot(sd[0], sd[2]) || 1, ax = -sd[0] / h, az = -sd[2] / h;
+    let ahead = 0;
+    for (const d of [250, 500, 800]) ahead = Math.max(ahead, weather.rainAt(x + ax * d, z + az * d));
+    const sunSide = weather.coverAt(x - ax * 500, z - az * 500);
+    bow = smooth(0.2, 0.55, ahead) * (1 - smooth(0.55, 0.85, sunSide)) * smooth(42, 32, env.sunEl) * smooth(0, 3, env.sunEl) * (1 - env.snowFrac);
+  }
+  env.bow += (bow - env.bow) * Math.min(1, dt / 3);
+  // tests can pin any of these (window.__emberwood.wxForce = { wet: 1 })
+  if (wxForce) Object.assign(env, wxForce);
+}
+let wxForce = null;
 // The sun and moon follow real sky geometry: the hour angle comes from the time of day, the
 // sun's declination from the season (+23° in northern summer) and the observer's latitude from
 // where the player stands on the planet. Stars turn about the celestial pole once a day.
@@ -1239,7 +1335,8 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uSunDir', env.sunDir); setU(pr, 'uSunCol', env.sunCol); setU(pr, 'uNight', env.night);
   setU(pr, 'uZenith', env.zenith); setU(pr, 'uHorizon', env.horizon);
   setU(pr, 'uCam', eye); setU(pr, 'uTime', time);
-  setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.rain) * Math.sqrt(settings.envFog));
+  setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.precip + 0.6 * env.snowFall + 5 * env.hill) * Math.sqrt(settings.envFog));
+  setU(pr, 'uWet', env.wet); setU(pr, 'uSnow', env.snow); setU(pr, 'uFog2', env.fog2); setU(pr, 'uRainVeil', weather.ready && weather.maxRain > 0.25 ? 1 : 0);
   setU(pr, 'uAmbSky', env.ambSky); setU(pr, 'uAmbGround', env.ambGround);
   setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind);
   setU(pr, 'uEnc', post.enc);
@@ -1363,6 +1460,7 @@ function render(time, dt) {
     setI(pr, 'uNoise3', 7); setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11);
     const f = env.flash;
     setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, 0, f.z, f.I] : [0, 0, 0, 0]);
+    setU(pr, 'uBow', env.bow);
     gl.bindVertexArray(emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
@@ -1403,9 +1501,9 @@ function render(time, dt) {
   }
 
   // falling leaves
-  // autumn leaves, spring petals, a few summer leaves; winter turns the same particles into snow
-  const snow = seasonW(3), leafN = Math.round(settings.leaves * (snow > 0.5 ? 0.7 : seasonW(2) + seasonW(0) * 0.18 + seasonW(1) * 0.06));
-  if (leafN > 0 && (emitCount > 0 || snow > 0.5)) {
+  // autumn leaves, spring petals, a few summer leaves; snow when the weather snows
+  const leafN = Math.round(settings.leaves * (seasonW(3) > 0.5 ? 0 : seasonW(2) + seasonW(0) * 0.18 + seasonW(1) * 0.06));
+  if (leafN > 0 && emitCount > 0) {
     const pr = progs.leaf;
     gl.useProgram(pr.p);
     gl.disable(gl.CULL_FACE);
@@ -1414,10 +1512,26 @@ function render(time, dt) {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, heightTex); setI(pr, 'uHeight', 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, emitTex); setI(pr, 'uEmit', 2);
     gl.uniform1i(pr.u.uEmitCount, emitCount); gl.uniform1i(pr.u.uEmitBase, 0);
-    setU(pr, 'uSnow', snow > 0.5 ? 1 : 0); setU(pr, 'uFoam', 0);
+    setU(pr, 'uSnowMode', 0); setU(pr, 'uFoam', 0);
     gl.bindVertexArray(emptyVao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, leafN);
     stats.tris += leafN * 2; stats.draws++;
+    gl.enable(gl.CULL_FACE);
+  }
+  // snowfall, as heavy as the snow coming down overhead
+  const snowN = env.snowFall > 0.02 ? Math.round(Math.min(1, 0.12 + env.snowFall * 1.3) * Math.min(14000, Math.max(2500, settings.leaves * 0.9))) : 0;
+  if (snowN > 0) {
+    const pr = progs.leaf;
+    gl.useProgram(pr.p);
+    gl.disable(gl.CULL_FACE);
+    setCommon(pr, eye, time);
+    setU(pr, 'uVP', vp);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, heightTex); setI(pr, 'uHeight', 1);
+    setU(pr, 'uSnowMode', 1); setU(pr, 'uFoam', 0);
+    gl.bindVertexArray(emptyVao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, snowN);
+    setU(pr, 'uSnowMode', 0);
+    stats.tris += snowN * 2; stats.draws++;
     gl.enable(gl.CULL_FACE);
   }
   // spray at waterfall feet and surf on the shore, drawn with the same particle program
@@ -1430,7 +1544,7 @@ function render(time, dt) {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, heightTex); setI(pr, 'uHeight', 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, emitTex); setI(pr, 'uEmit', 2);
     gl.uniform1i(pr.u.uEmitCount, foamCount); gl.uniform1i(pr.u.uEmitBase, foamBase);
-    setU(pr, 'uSnow', 0); setU(pr, 'uFoam', 1);
+    setU(pr, 'uSnowMode', 0); setU(pr, 'uFoam', 1);
     const fn = Math.min(12000, foamCount * 10);
     gl.bindVertexArray(emptyVao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, fn);
@@ -1472,7 +1586,7 @@ function render(time, dt) {
 
   // rain: streaks in a box that follows the camera, as heavy as the simulated rain overhead
   const rainN = Math.round(Math.min(1, env.rain * 1.4) * 9000 * Math.min(1, settings.leaves / 400 + 0.5));
-  if (rainN > 30 && seasonW(3) < 0.5) {
+  if (rainN > 30) {
     const pr = progs.leaf;
     gl.useProgram(pr.p);
     gl.disable(gl.CULL_FACE);
@@ -1480,7 +1594,7 @@ function render(time, dt) {
     setCommon(pr, eye, time);
     setU(pr, 'uVP', vp);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, heightTex); setI(pr, 'uHeight', 1);
-    setU(pr, 'uSnow', 0); setU(pr, 'uFoam', 0); setU(pr, 'uRainMode', 1);
+    setU(pr, 'uSnowMode', 0); setU(pr, 'uFoam', 0); setU(pr, 'uRainMode', 1);
     gl.bindVertexArray(emptyVao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, rainN);
     setU(pr, 'uRainMode', 0);
@@ -1552,6 +1666,7 @@ bindRange('leaves', 'leaves', v => v === 0 ? 'off' : v.toLocaleString('en-US'));
 const clock = h => { const m = Math.floor(((h % 24) + 24) % 24 * 60); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 bindRange('tod', 'tod', clock, updateEnv);
 bindRange('daylen', 'daylen', v => v === 0 ? 'time stands still' : `${v} min per day`);
+bindRange('volume', 'volume', v => v === 0 ? 'off' : `${Math.round(v * 100)}%`, () => { if (settings.volume > 0) audio.unlock(); });
 bindRange('wind', 'wind', v => v === 0 ? 'dead calm' : `${v.toFixed(1)}× the simulated wind`);
 // environment: live knobs on the weather simulation (the terrain itself stays as the planet made it)
 const times = (v, lo, hi) => Math.abs(v - 1) < 0.001 ? 'as simulated' : `${v.toFixed(v < 1 ? 2 : 1)}× ${v < 1 ? lo : hi}`;
@@ -1861,7 +1976,7 @@ function frameBody(now) {
   updateChunks();
   simStep(dt);
   if (planet && !weather.ready && state.spawned) weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
-  weather.windMul = settings.wind;
+  weather.windMul = settings.wind; weather.tod = settings.tod;
   weather.humid = settings.envHumid; weather.cloudy = settings.envClouds; weather.stormMul = settings.envStorms; weather.rainMul = settings.envRain;
   if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }
   weather.update(dt, state.pos[0], state.pos[2]);
@@ -1872,17 +1987,24 @@ function frameBody(now) {
   // foliage sway, the falling leaves and the sea state; smoothed over a few seconds
   {
     const w = weather.ready ? weather.windAt(state.pos[0] / 16, state.pos[2] / 16) : [0.7, 0.2];
+    // a thunderstorm's gust front: rain-cooled air pouring out ahead of the storm
+    if (weather.ready && now - outflowT > 250) { outflowT = now; outflow = weather.outflowAt(state.pos[0], state.pos[2]); }
     const k = Math.min(1, dt / 1.5);
-    localWind[0] += (w[0] * settings.wind - localWind[0]) * k; localWind[1] += (w[1] * settings.wind - localWind[1]) * k;
-    const sp = Math.hypot(localWind[0], localWind[1]);
+    localWind[0] += ((w[0] + outflow[0]) * settings.wind - localWind[0]) * k; localWind[1] += ((w[1] + outflow[1]) * settings.wind - localWind[1]) * k;
+    const sp0 = Math.hypot(localWind[0], localWind[1]);
+    // gusts: the wind comes in bursts, more so when it is strong and in stormy air
+    const t = now / 1000, g = 0.5 * Math.sin(t * 0.37) + 0.3 * Math.sin(t * 1.13 + 1.7) + 0.2 * Math.sin(t * 2.71 + 4.1);
+    const gusty = 0.25 + 0.35 * Math.min(1, sp0 / 2) + 0.4 * Math.min(1, env.precip * 1.5 + Math.hypot(outflow[0], outflow[1]));
+    env.gust = 1 + gusty * Math.max(0, g) ** 2 * 1.8;
+    const sp = sp0 * env.gust;
+    env.windSpeed = sp;
     env.foliage = Math.min(3, sp * 1.1);
-    env.seaWind = [localWind[0] / (sp || 1), localWind[1] / (sp || 1), Math.min(2.2, 0.15 + sp * 0.95)];
+    env.seaWind = [localWind[0] / (sp0 || 1), localWind[1] / (sp0 || 1), Math.min(2.2, 0.15 + sp0 * 0.95)];
   }
+  updateWeatherEnv(dt);
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up
   {
-    const r = weather.ready && cloudsOn() ? Math.min(1, Math.max(0, weather.rainAt(state.pos[0], state.pos[2]) - 0.08) / 0.6) * (1 - smooth(290, 320, state.pos[1])) : 0;
-    env.rain += (r - env.rain) * Math.min(1, dt / 3);
-    const k = env.rain;
+    const k = env.precip;
     const grey = c => { const l = (c[0] + c[1] + c[2]) / 3 * 0.8; return c.map(x => (x + (l - x) * k * 0.7) * (1 - 0.5 * k)); };
     env.zenith = grey(env.zenith); env.horizon = grey(env.horizon);
     env.sunCol = env.sunCol.map(x => x * (1 - 0.45 * k)); env.ambSky = env.ambSky.map(x => x * (1 - 0.3 * k));
@@ -1917,6 +2039,18 @@ function frameBody(now) {
   target = playing && !boat.state.aboard ? raycast(eyePos(), camDir(), 7) : null;
   const time = (now - clockStart) / 1000;
   render(time, dt);
+  if (now - hear.t > 250) { hear.t = now; if (state.spawned) listenAround(); }
+  {
+    const ey = eyePos(), eb = getBlock(Math.floor(ey[0]), Math.floor(ey[1]), Math.floor(ey[2]));
+    audio.update(dt, {
+      volume: settings.volume, playing, x: state.pos[0], z: state.pos[2], height: state.pos[1],
+      right: [Math.cos(state.yaw), 0, -Math.sin(state.yaw)],
+      rain: env.rain, wind: env.windSpeed, gust: env.gust, canopy: hear.canopy, roof: hear.roof, trees: hear.trees,
+      sea: weather.ready && state.pos[1] < 70 ? Math.min(1, weather.seaNear(state.pos[0], state.pos[2], 2) * 2.2) : 0, seaState: env.seaWind[2],
+      underwater: isW(eb) && ey[1] - Math.floor(ey[1]) < lvlOf(eb) / 8 * 0.9 + 0.02,
+      flash: env.flash,
+    });
+  }
   if (!playing) drawGlobe(now, dt);
   if (now - hudT > 250) {
     trackTrail();
@@ -1932,6 +2066,7 @@ function frameBody(now) {
     const loading = $('loading');
     loading.hidden = state.spawned;
     if (!state.spawned) loading.textContent = planet ? 'Growing the forest…' : planetText;
+    $('hud-wx').textContent = weatherWords();
     const lat = latOf(p[2]);
     $('lat').textContent = `${Math.abs(lat).toFixed(0)}° ${lat >= 0 ? 'N' : 'S'}`;
     $('tod').value = settings.tod; $('tod-v').textContent = clock(settings.tod);
@@ -2006,6 +2141,6 @@ function restoreAt(data) {
     }
   }, 100);
 }
-window.__emberwood = { heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, boat, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
+window.__emberwood = { get wxForce() { return wxForce; }, set wxForce(v) { wxForce = v; }, audio, heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, boat, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
 if (hot && hot.ready) hot.ready(start); else start(hot && hot.data ? hot.data : {});
 })();
