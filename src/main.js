@@ -989,7 +989,7 @@ function moveAxis(axis, amt) {
 }
 
 const keys = new Set();
-const touch = { mx: 0, mz: 0, jump: false };
+const touch = { mx: 0, mz: 0, jump: false, down: false };
 function physics(dt) {
   const s = state;
   const fx = -Math.sin(s.yaw), fz = -Math.cos(s.yaw), rx = Math.cos(s.yaw), rz = -Math.sin(s.yaw);
@@ -1012,7 +1012,7 @@ function physics(dt) {
   if (s.fly) {
     let ty = 0;
     if (jump) ty += speed;
-    if (keys.has('KeyC') || keys.has('ControlLeft')) ty -= speed;
+    if (keys.has('KeyC') || keys.has('ControlLeft') || touch.down) ty -= speed;
     s.vel[1] += (ty - s.vel[1]) * Math.min(1, dt * 8);
   } else if (inWater) {
     s.vel[1] -= 9 * dt; s.vel[1] *= 0.92;
@@ -1678,11 +1678,46 @@ expoEl.addEventListener('input', () => { settings.fx.exposure = Number(expoEl.va
 $('fx-all').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = true; syncFx(); saveSettings(); });
 $('fx-none').addEventListener('click', () => { for (const [k] of FX_LABELS) settings.fx[k] = false; syncFx(); saveSettings(); });
 
+// menu tabs: Play, Guide, Controls, Graphics, Weather, World; the last one opened comes back next time
+const TABS = ['play', 'guide', 'controls', 'graphics', 'weather', 'world'];
+function setTab(name, focus) {
+  if (!TABS.includes(name)) name = 'play';
+  for (const k of TABS) {
+    const on = k === name, b = $('tab-' + k);
+    b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1;
+    $('pane-' + k).hidden = !on;
+  }
+  $('panes').scrollTop = 0;
+  if (focus) $('tab-' + name).focus();
+  settings.menuTab = name; saveSettings();
+}
+TABS.forEach(k => $('tab-' + k).addEventListener('click', () => setTab(k)));
+$('tabs').addEventListener('keydown', e => {
+  const i = TABS.indexOf(settings.menuTab), n = TABS.length;
+  const j = e.key === 'ArrowRight' ? (i + 1) % n : e.key === 'ArrowLeft' ? (i + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+  if (j >= 0) { setTab(TABS[j], true); e.preventDefault(); }
+});
+document.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => setTab(b.dataset.goto, true)));
+setTab(settings.menuTab);
+$('map-open').addEventListener('click', () => toggleMap(true));
+$('map-close').addEventListener('click', () => toggleMap(false));
+if (isTouch) $('maphelp').textContent = 'Double-tap to teleport · tap outside the map to close';
+// touch screens have no Ctrl: a double tap on the map teleports
+let lastTap = null;
+$('map').addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'touch') return;
+  const now = performance.now();
+  if (lastTap && now - lastTap.t < 400 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+    lastTap = null;
+    mapTeleport({ clientX: e.clientX, clientY: e.clientY, ctrlKey: true, preventDefault() {}, stopPropagation() {} });
+  } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+});
+
 function setPlaying(on) {
   playing = on;
   menu.hidden = on;
   document.body.classList.toggle('playing', on);
-  if (!on) keys.clear();
+  if (!on) { keys.clear(); $('enter').textContent = 'Back to the forest'; }
 }
 let lockFailed = false;
 $('globe-btn').addEventListener('click', () => toggleMap(true));
@@ -1734,7 +1769,7 @@ window.addEventListener('keydown', e => {
   if (!$('mapview').hidden) { const o = OVERLAYS.find(o => 'Key' + o[1] === e.code); if (o) { toggleOverlay(o[0]); e.preventDefault(); return; } }
   if (e.code === 'KeyM' && document.activeElement?.tagName !== 'INPUT') { toggleMap(true); return; }
   if (!playing) {
-    if (e.code === 'Enter' && !menu.hidden && document.activeElement?.tagName !== 'INPUT') $('enter').click();
+    if (e.code === 'Enter' && !menu.hidden && !/^(INPUT|BUTTON|SELECT)$/.test(document.activeElement?.tagName)) $('enter').click();
     return;
   }
   if (e.code === 'Escape' && !locked()) { setPlaying(false); return; }
@@ -1796,6 +1831,8 @@ if (isTouch) {
   hold('t-boat', toggleBoat);
   hold('t-fly', () => { state.fly = !state.fly; showToast(state.fly ? 'Flying' : 'Walking'); });
   hold('t-menu', () => setPlaying(false));
+  hold('t-map', () => toggleMap(true));
+  hold('t-down', () => { touch.down = true; }, () => { touch.down = false; });
 }
 
 // ---------- loop ----------
@@ -1884,6 +1921,7 @@ function frameBody(now) {
     trackTrail();
     if (!$('mapview').hidden) drawMap();
     hudT = now;
+    document.body.classList.toggle('flying', state.fly && !boat.state.aboard);
     const p = state.pos;
     let ready = 0; for (const ch of chunks.values()) if (ch.state === 'ready') ready++;
     hud.textContent =

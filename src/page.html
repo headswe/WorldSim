@@ -42,8 +42,8 @@ body.playing #cross { display: block; }
 
 #toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); font-family: var(--display); font-size: 16px; opacity: 0; transition: opacity .25s; pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,.8); }
 #toast.on { opacity: 1; }
+body:not(.playing) #hotbar { display: none; }
 
-.head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
 #globe-btn { padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%; line-height: 0; }
 #globe-btn:focus-visible { outline: 2px solid var(--parch); outline-offset: 3px; }
 #globe { width: 88px; height: 88px; display: block; }
@@ -62,25 +62,49 @@ body.playing #cross { display: block; }
 .maplegend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--ash); }
 #loading { position: fixed; right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); font-size: 11px; color: var(--ash); }
 
-#menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: flex-start; padding-inline: 16px; padding-block: 16px; background: linear-gradient(90deg, rgba(20,12,7,.72) 0%, rgba(20,12,7,.25) 55%, rgba(20,12,7,0) 100%); overflow-y: auto; }
-.sheet { width: min(430px, 100%); display: grid; gap: 18px; padding: 26px 24px 22px; margin-left: clamp(0px, 5vw, 64px); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+/* Menu: a field-notebook sheet with a fixed head, tabs, a scrolling body and the enter button pinned at the bottom.
+   The sheet never grows past the window, so on phones nothing is pushed out of reach above the top. */
+#menu { position: fixed; inset: 0; display: flex; padding: 16px; background: linear-gradient(90deg, rgba(20,12,7,.72) 0%, rgba(20,12,7,.25) 55%, rgba(20,12,7,0) 100%); }
+.sheet { width: min(500px, 100%); max-height: 100%; min-height: 0; margin: auto 0 auto clamp(0px, 5vw, 64px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding: 22px 24px 12px; }
 .eyebrow { font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ember); }
-h1 { font-family: var(--display); font-weight: 400; font-size: clamp(38px, 7vw, 54px); line-height: 1; margin: 6px 0 0; letter-spacing: -0.01em; text-wrap: balance; }
-#menu-sub { margin: 10px 0 0; color: var(--ash); line-height: 1.55; max-width: 38ch; }
-#enter { justify-self: start; font: 600 14px var(--mono); color: #1a110b; background: var(--ember); border: 0; border-radius: 3px; padding: 12px 18px; cursor: pointer; letter-spacing: .02em; }
+h1 { font-family: var(--display); font-weight: 400; font-size: clamp(38px, 7vw, 54px); line-height: 1; margin: 6px 0 0; letter-spacing: -0.01em; }
+.tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs button { flex: 1 0 auto; font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ash); background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 10px 8px 9px; cursor: pointer; white-space: nowrap; }
+.tabs button:hover { color: var(--parch); }
+.tabs button[aria-selected=true] { color: var(--parch); border-bottom-color: var(--ember); }
+.panes { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 18px 24px; }
+.pane { display: grid; gap: 18px; align-content: start; }
+.group { display: grid; gap: 10px; }
+.label { font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ash); }
+.controls .label { margin-top: 6px; }
+#menu-sub { margin: 0; color: var(--ash); line-height: 1.55; max-width: 44ch; }
+.quick { margin: 0; padding-left: 18px; display: grid; gap: 7px; color: var(--ash); line-height: 1.6; font-size: 12px; }
+.quick li::marker { color: var(--ember); }
+.link { font: inherit; color: var(--parch); background: none; border: 0; padding: 0; text-decoration: underline; text-decoration-color: var(--ember); text-underline-offset: 3px; cursor: pointer; }
+.prose { gap: 0; font-size: 12px; line-height: 1.65; color: var(--ash); }
+.prose h3 { font-family: var(--display); font-weight: 400; font-size: 17px; color: var(--parch); margin: 18px 0 6px; }
+.prose h3:first-child { margin-top: 0; }
+.prose p { margin: 0; max-width: 60ch; }
+.sheet-foot { display: flex; align-items: center; gap: 12px; padding: 14px 24px 18px; border-top: 1px solid var(--line); flex: none; }
+.sheet-foot .hint { font-size: 11px; color: var(--ash); }
+#enter { font: 600 14px var(--mono); color: #1a110b; background: var(--ember); border: 0; border-radius: 3px; padding: 12px 18px; cursor: pointer; letter-spacing: .02em; }
 #enter:hover { background: #f08a52; }
-#enter:focus-visible, .sheet button:focus-visible, .sheet input:focus-visible { outline: 2px solid var(--parch); outline-offset: 2px; }
-.keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; margin: 0; font-size: 12px; }
+#enter:focus-visible, .sheet button:focus-visible, .sheet input:focus-visible, .sheet select:focus-visible { outline: 2px solid var(--parch); outline-offset: 2px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 12px; }
 .keys dt { color: var(--parch); white-space: nowrap; }
 .keys dd { margin: 0; color: var(--ash); }
 kbd { font: inherit; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; }
-details { border-top: 1px solid var(--line); padding-top: 14px; }
-summary { cursor: pointer; font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--ash); }
-.controls { display: grid; gap: 12px; margin-top: 14px; }
+body.touch .kb-only, body:not(.touch) .touch-only { display: none; }
+body.touch .ctl-touch { order: -1; }
+#pane-controls { display: flex; flex-direction: column; gap: 22px; }
+#pane-controls[hidden] { display: none; }
+.controls { display: grid; gap: 12px; }
 .row { display: grid; gap: 4px; }
 .row label { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
-.row output { color: var(--ash); font-variant-numeric: tabular-nums; }
-input[type=range] { width: 100%; accent-color: var(--ember); }
+.row output { color: var(--ash); font-variant-numeric: tabular-nums; text-align: right; }
+input[type=range] { width: 100%; margin: 4px 0; accent-color: var(--ember); }
 .check { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 input[type=checkbox] { accent-color: var(--ember); }
 .seedrow { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -89,6 +113,7 @@ input[type=checkbox] { accent-color: var(--ember); }
 .seedrow button:hover { border-color: var(--ember); }
 .fxgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; }
 select { font: inherit; color: var(--parch); background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; }
+select option { background: var(--panel-solid); }
 .seasons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .seasons button { display: grid; justify-items: center; gap: 6px; font: 600 11px var(--mono); letter-spacing: .04em; color: var(--ash); background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 4px; padding: 9px 4px 8px; cursor: pointer; transition: border-color .15s, color .15s, background .15s; }
 .seasons button i { width: 26px; height: 26px; border-radius: 50%; background: conic-gradient(var(--a) 0 50%, var(--b) 50% 100%); box-shadow: inset 0 0 0 1px rgba(0,0,0,.35); transform: rotate(-45deg); transition: transform .3s; }
@@ -96,7 +121,13 @@ select { font: inherit; color: var(--parch); background: rgba(0,0,0,.3); border:
 .seasons button[aria-checked=true] { border-color: var(--ember); color: var(--parch); background: rgba(232,116,59,.12); }
 .seasons button[aria-checked=true] i { transform: rotate(135deg) scale(1.08); }
 .seasons button:focus-visible { outline: 2px solid var(--parch); outline-offset: 2px; }
-.foot { font-size: 11px; color: var(--ash); line-height: 1.5; }
+.foot { font-size: 11px; color: var(--ash); line-height: 1.5; margin: 4px 0 0; }
+/* bigger targets for fingers */
+body.touch .seedrow input, body.touch .seedrow button, body.touch select { padding: 10px 12px; font-size: 14px; }
+body.touch input[type=range] { height: 28px; }
+body.touch input[type=checkbox] { width: 20px; height: 20px; }
+body.touch .check { min-height: 32px; }
+body.touch .tabs button { padding: 13px 10px 12px; }
 
 #touchui, #stick { display: none; }
 body.touch.playing #touchui { display: block; }
@@ -111,11 +142,39 @@ body.touch #stick:not([hidden]) { display: block; }
 #t-boat { right: 160px; bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
 #t-menu { right: 16px; top: calc(14px + env(safe-area-inset-top, 0px)); width: 44px !important; height: 44px !important; }
 body.touch.playing #loading { display: none; }
-@media (max-width: 520px) {
-  .sheet { padding: 20px 18px; margin-left: 0; }
+#t-map { right: 160px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
+#t-down { right: 230px; bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+#touchui #t-down { display: none; }
+body.flying #touchui #t-down { display: block; }
+#map-close { margin-left: auto; }
+/* phones: the sheet takes the whole screen, body scrolls between the tabs and the enter button */
+@media (max-width: 560px) {
+  #menu { padding: 0; background: rgba(20,12,7,.35); }
+  .sheet { width: 100%; height: 100%; max-height: none; margin: 0; border: 0; border-radius: 0; background: rgba(26,17,11,.86); }
+  .head { padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 8px; }
+  h1 { font-size: 38px; }
+  #globe { width: 64px; height: 64px; }
+  .tabs { padding: 0 6px; }
+  .tabs button, body.touch .tabs button { flex: 1 1 auto; padding-inline: 3px; letter-spacing: .02em; font-size: 10.5px; }
+  .panes { padding: 16px; }
+  .sheet-foot { padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); }
+  #enter { flex: 1; padding: 14px 18px; }
   #hud-stats { display: none; }
   .slot { width: 30px; height: 30px; }
   .slot .sw { inset: 5px; }
+}
+/* short landscape screens (phones held sideways): a compact head so the settings get the room */
+@media (max-height: 520px) {
+  #menu { padding: 8px; }
+  .sheet { width: min(640px, 100%); }
+  .head { padding: 10px 16px 4px; }
+  h1 { font-size: 28px; margin-top: 2px; }
+  #globe { width: 48px; height: 48px; }
+  .panes { padding: 12px 16px; }
+  .sheet-foot { padding: 8px 16px; }
+  #enter { padding: 10px 16px; }
+  .tabs button { padding-block: 8px 7px; }
+  body.touch .tabs button { padding-block: 10px 9px; }
 }
 @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
 </style>
@@ -133,6 +192,8 @@ body.touch.playing #loading { display: none; }
   <button id="t-place" type="button">Place</button>
   <button id="t-fly" type="button">Fly</button>
   <button id="t-boat" type="button">Boat</button>
+  <button id="t-map" type="button">Map</button>
+  <button id="t-down" type="button">Down</button>
   <button id="t-menu" type="button">II</button>
 </div>
 
@@ -141,7 +202,7 @@ body.touch.playing #loading { display: none; }
     <canvas id="map"></canvas>
     <div class="mapmodes" id="mapmodes" role="toolbar" aria-label="Map view"></div>
     <div class="mapmodes overlays" id="mapoverlays" role="toolbar" aria-label="Map overlays"><span class="ol-label">Overlays</span></div>
-    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span><kbd>Ctrl</kbd>+click to teleport · <kbd>1</kbd>–<kbd>6</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span></div>
+    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span id="maphelp"><kbd>Ctrl</kbd>+click to teleport · <kbd>1</kbd>–<kbd>6</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span><span class="mapmodes" id="map-closebar"><button id="map-close" type="button">Close map</button></span></div>
   </div>
 </div>
 <div id="menu">
@@ -151,69 +212,157 @@ body.touch.playing #loading { display: none; }
         <div class="eyebrow"><span id="month">Late October</span> · <span id="lat">47° N</span></div>
         <h1>Emberwood</h1>
       </div>
-      <button id="globe-btn" type="button" aria-label="Open the planet map"><canvas id="globe" width="176" height="176"></canvas></button>
+      <button id="globe-btn" type="button" aria-label="Open the planet map" title="Planet map"><canvas id="globe" width="176" height="176"></canvas></button>
     </div>
-    <p id="menu-sub">A whole planet of drifting plates, rain-cut valleys and rivers, and you in its autumn forests. Maples gone scarlet, birches in gold, leaves drifting down through low afternoon light.</p>
-    <div class="seasons" role="radiogroup" aria-label="Season" id="seasons">
-      <button type="button" role="radio" data-s="0"><i style="--a:#f3c4cf;--b:#8cc04a"></i>Spring</button>
-      <button type="button" role="radio" data-s="1"><i style="--a:#3f7a2a;--b:#7aa83a"></i>Summer</button>
-      <button type="button" role="radio" data-s="2"><i style="--a:#c2361a;--b:#eaa628"></i>Autumn</button>
-      <button type="button" role="radio" data-s="3"><i style="--a:#eef2f6;--b:#7d8a99"></i>Winter</button>
+    <div class="tabs" role="tablist" aria-label="Menu" id="tabs">
+      <button type="button" role="tab" id="tab-play" aria-controls="pane-play">Play</button>
+      <button type="button" role="tab" id="tab-guide" aria-controls="pane-guide">Guide</button>
+      <button type="button" role="tab" id="tab-controls" aria-controls="pane-controls">Controls</button>
+      <button type="button" role="tab" id="tab-graphics" aria-controls="pane-graphics">Graphics</button>
+      <button type="button" role="tab" id="tab-weather" aria-controls="pane-weather">Weather</button>
+      <button type="button" role="tab" id="tab-world" aria-controls="pane-world">World</button>
     </div>
-    <button id="enter" type="button">Walk into the forest</button>
-    <dl class="keys">
-      <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Walk, <kbd>Shift</kbd> to run</dd>
-      <dt><kbd>Space</kbd></dt><dd>Jump or swim up</dd>
-      <dt><kbd>F</kbd></dt><dd>Fly; <kbd>Space</kbd> rises, <kbd>C</kbd> sinks</dd>
-      <dt><kbd>B</kbd></dt><dd>Launch, board or leave the boat; <kbd>W</kbd>/<kbd>S</kbd> throttle, <kbd>A</kbd>/<kbd>D</kbd> helm</dd>
-      <dt>Left / right click</dt><dd>Break / place a block</dd>
-      <dt><kbd>1</kbd>–<kbd>9</kbd>, wheel</dt><dd>Choose a block</dd>
-      <dt><kbd>G</kbd></dt><dd>Cycle shader looks</dd>
-      <dt><kbd>N</kbd></dt><dd>Next season</dd>
-      <dt><kbd>T</kbd></dt><dd>An hour later, <kbd>Shift</kbd> earlier</dd>
-      <dt><kbd>M</kbd></dt><dd>Planet map</dd>
-      <dt><kbd>Esc</kbd></dt><dd>Back to this sheet</dd>
-    </dl>
-    <details>
-      <summary>Settings</summary>
-      <div class="controls">
-        <div class="row"><label for="rd">View distance <output id="rd-v"></output></label><input id="rd" type="range" min="3" max="16" step="1"></div>
-        <div class="row"><label for="leaves">Falling leaves <output id="leaves-v"></output></label><input id="leaves" type="range" min="0" max="60000" step="1000"></div>
-        <div class="row"><label for="tod">Time of day <output id="tod-v"></output></label><input id="tod" type="range" min="0" max="23.9" step="0.1"></div>
-        <div class="row"><label for="daylen">Day length <output id="daylen-v"></output></label><input id="daylen" type="range" min="0" max="60" step="5"></div>
-        <div class="row"><label for="wind">Wind strength <output id="wind-v"></output></label><input id="wind" type="range" min="0" max="3" step="0.1"></div>
-        <label class="check" for="shadows"><input id="shadows" type="checkbox"> Sun shadows</label>
-        <div class="row"><label for="seed">World seed</label>
-          <div class="seedrow"><input id="seed" type="text" inputmode="numeric"><button id="regen" type="button">Grow</button><button id="reseed" type="button">New forest</button></div>
+    <div class="panes" id="panes">
+      <section class="pane" id="pane-play" role="tabpanel" aria-labelledby="tab-play">
+        <p id="menu-sub">A whole planet of drifting plates, rain-cut valleys and rivers, and you in its autumn forests. Maples gone scarlet, birches in gold, leaves drifting down through low afternoon light.</p>
+        <div class="group">
+          <div class="label">Season</div>
+          <div class="seasons" role="radiogroup" aria-label="Season" id="seasons">
+            <button type="button" role="radio" data-s="0"><i style="--a:#f3c4cf;--b:#8cc04a"></i>Spring</button>
+            <button type="button" role="radio" data-s="1"><i style="--a:#3f7a2a;--b:#7aa83a"></i>Summer</button>
+            <button type="button" role="radio" data-s="2"><i style="--a:#c2361a;--b:#eaa628"></i>Autumn</button>
+            <button type="button" role="radio" data-s="3"><i style="--a:#eef2f6;--b:#7d8a99"></i>Winter</button>
+          </div>
         </div>
-        <div class="row"><label for="spot">Share this spot <output id="spot-v"></output></label>
-          <div class="seedrow"><input id="spot" type="text" placeholder="paste a shared spot" spellcheck="false" autocomplete="off"><button id="spot-go" type="button">Go</button><button id="spot-share" type="button">Share</button></div>
+        <div class="group">
+          <div class="label">Getting started</div>
+          <ul class="quick kb-only">
+            <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to walk, the mouse to look, <kbd>Space</kbd> to jump.</li>
+            <li><kbd>F</kbd> to fly over the land, <kbd>M</kbd> for the planet map, <kbd>B</kbd> for a boat at the shore.</li>
+            <li><kbd>Esc</kbd> brings you back here. The <button type="button" class="link" data-goto="guide">Guide</button> explains the rest.</li>
+          </ul>
+          <ul class="quick touch-only">
+            <li>Drag on the left half of the screen to walk, on the right half to look around.</li>
+            <li>The buttons on the right jump, fly, break and place blocks, launch the boat and open the map.</li>
+            <li><b>II</b> brings you back here. The <button type="button" class="link" data-goto="guide">Guide</button> explains the rest.</li>
+          </ul>
         </div>
-      </div>
-    </details>
-    <details>
-      <summary>Environment</summary>
-      <div class="controls">
-        <div class="row"><label for="envTemp">Temperature <output id="envTemp-v"></output></label><input id="envTemp" type="range" min="-20" max="20" step="1"></div>
-        <div class="row"><label for="envHumid">Humidity <output id="envHumid-v"></output></label><input id="envHumid" type="range" min="0.3" max="2" step="0.05"></div>
-        <div class="row"><label for="envClouds">Cloudiness <output id="envClouds-v"></output></label><input id="envClouds" type="range" min="0.5" max="1.6" step="0.05"></div>
-        <div class="row"><label for="envStorms">Storms <output id="envStorms-v"></output></label><input id="envStorms" type="range" min="0" max="3" step="0.1"></div>
-        <div class="row"><label for="envRain">Rain <output id="envRain-v"></output></label><input id="envRain" type="range" min="0" max="3" step="0.1"></div>
-        <div class="row"><label for="envFog">Haze <output id="envFog-v"></output></label><input id="envFog" type="range" min="0" max="4" step="0.1"></div>
-        <div class="seedrow"><button id="env-reset" type="button">Back to the planet's own climate</button></div>
-      </div>
-    </details>
-    <details>
-      <summary>Shaders</summary>
-      <div class="controls">
-        <div class="row"><label for="look">Look <output>G cycles</output></label><select id="look"></select></div>
-        <div class="row"><label for="exposure">Exposure <output id="exposure-v"></output></label><input id="exposure" type="range" min="0.4" max="2.5" step="0.05"></div>
-        <div class="row"><label for="cloudq">Cloud quality <output id="cloudq-v"></output></label><input id="cloudq" type="range" min="0" max="3" step="1"></div>
-        <div class="fxgrid" id="fx-grid"></div>
-        <div class="seedrow"><button id="fx-all" type="button">All on</button><button id="fx-none" type="button">All off</button></div>
-      </div>
-    </details>
-    <div class="foot">Chunks of 32×32×124 blocks are grown and greedy-meshed on background workers. The frame is lit in HDR and runs through 9 post passes before it reaches you.</div>
+      </section>
+
+      <section class="pane prose" id="pane-guide" role="tabpanel" aria-labelledby="tab-guide" hidden>
+        <h3>A whole planet</h3>
+        <p>Every seed grows its own planet. Tectonic plates drift and collide to push up mountain ranges, prevailing winds carry rain inland and leave dry rain shadows behind the ridges, and the rain carves valleys and gathers into rivers that run through lakes and deltas to the sea. Forests, grassland, taiga, tundra and desert follow from the latitude, the height and the rain. The world wraps around east to west, and the poles are icy.</p>
+        <h3>Walking, swimming and flying</h3>
+        <p>Walk the forest floor, run, and jump up single blocks. In water you swim slowly and can keep your head up by jumping. Flying lifts you above the trees and is fast, which is the easiest way to scout a valley or follow a river down to the coast. The corner readout shows your position, the time of day, the seed and the build.</p>
+        <h3>Breaking and building</h3>
+        <p>Aim at a block within a few steps to break it, or place the block chosen in the bar at the bottom: logs, planks, leaves, stone, mossy stone and water. Water you place behaves like the rivers: it spreads, flows downhill and pours over edges as waterfalls. Changes last while you stay in this world; growing a new world or reloading the page starts fresh.</p>
+        <h3>Sailing</h3>
+        <p>Stand at the shore facing open water and launch the boat. It is a ten metre sailing yacht that needs deep enough water, rides the same waves you see, and heels in the wind. Throttle forward and back and steer with the helm; press the boat key again close to it to step ashore, or to climb back aboard later.</p>
+        <h3>The planet map</h3>
+        <p>The map shows the whole planet with you on it. Switch between six views (terrain, plates, rain, temperature, drainage and rivers) and lay rivers, contours, plate edges, wind and storms, clouds, a grid and your own trail over any of them. Point at a place to read its biome, height and temperature. <span class="kb-only"><kbd>Ctrl</kbd>+click (<kbd>Cmd</kbd>+click on a Mac) teleports you there.</span><span class="touch-only">Double-tap a place to teleport there.</span></p>
+        <h3>Weather</h3>
+        <p>Clouds, wind and rain come from a running weather simulation over the planet around you. Storm systems drift across, cumulus build into thunderheads with lightning, rain darkens the sky and rings the water, and the wind sways the trees, carries the falling leaves and raises the sea from ripples to long storm swells. The Weather tab can push the climate warmer, wetter, cloudier, stormier or hazier, and puts it back as simulated in one click.</p>
+        <h3>Seasons and time</h3>
+        <p>Spring brings blossom and fresh leaves, summer deep green, autumn scarlet and gold with leaves drifting down, and winter bare branches with snow falling. The sun and moon cross the sky on a day of a set length, with stars at night; you can stop the clock or step it an hour at a time.</p>
+        <h3>Looks and sharing</h3>
+        <p>Four looks (Cinematic, Painted, Ink and Retro) change how the frame is graded. The World tab can share the spot you are standing on as a short code or link with the seed, view, time, season and weather, so someone else can open exactly that view.</p>
+      </section>
+
+      <section class="pane" id="pane-controls" role="tabpanel" aria-labelledby="tab-controls" hidden>
+        <div class="group ctl-kb">
+          <div class="label">Keyboard and mouse</div>
+          <dl class="keys">
+            <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Walk, hold <kbd>Shift</kbd> to run</dd>
+            <dt>Mouse</dt><dd>Look around (click the view first)</dd>
+            <dt><kbd>Space</kbd></dt><dd>Jump, or swim up</dd>
+            <dt><kbd>F</kbd></dt><dd>Fly or walk; <kbd>Space</kbd> rises, <kbd>C</kbd> sinks</dd>
+            <dt>Left click</dt><dd>Break a block</dd>
+            <dt>Right click</dt><dd>Place a block</dd>
+            <dt><kbd>1</kbd>–<kbd>9</kbd>, wheel</dt><dd>Choose a block</dd>
+            <dt><kbd>B</kbd></dt><dd>Launch, board or leave the boat</dd>
+            <dt>Aboard</dt><dd><kbd>W</kbd>/<kbd>S</kbd> throttle, <kbd>A</kbd>/<kbd>D</kbd> helm, <kbd>Shift</kbd> more sail</dd>
+            <dt><kbd>M</kbd></dt><dd>Planet map</dd>
+            <dt><kbd>G</kbd></dt><dd>Next look</dd>
+            <dt><kbd>N</kbd></dt><dd>Next season</dd>
+            <dt><kbd>T</kbd></dt><dd>An hour later, <kbd>Shift</kbd>+<kbd>T</kbd> earlier</dd>
+            <dt><kbd>Esc</kbd></dt><dd>Back to this menu</dd>
+          </dl>
+        </div>
+        <div class="group">
+          <div class="label">On the map</div>
+          <dl class="keys">
+            <dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Terrain, plates, rain, temperature, drainage, rivers</dd>
+            <dt><kbd>R</kbd> <kbd>H</kbd> <kbd>P</kbd> <kbd>W</kbd> <kbd>C</kbd> <kbd>G</kbd> <kbd>T</kbd></dt><dd>Rivers, contours, plates, wind, clouds, grid, trail</dd>
+            <dt><kbd>Ctrl</kbd>+click</dt><dd>Teleport there</dd>
+            <dt>Double-tap</dt><dd>Teleport there on a touch screen</dd>
+            <dt><kbd>M</kbd>, <kbd>Esc</kbd></dt><dd>Close the map</dd>
+          </dl>
+        </div>
+        <div class="group ctl-touch">
+          <div class="label">Touch screen</div>
+          <dl class="keys">
+            <dt>Left half</dt><dd>Drag to walk; a stick appears under your thumb</dd>
+            <dt>Right half</dt><dd>Drag to look around</dd>
+            <dt>Jump</dt><dd>Jump or swim up; rise while flying</dd>
+            <dt>Down</dt><dd>Sink while flying</dd>
+            <dt>Fly</dt><dd>Fly or walk</dd>
+            <dt>Break, Place</dt><dd>The block in the middle of the screen</dd>
+            <dt>Hotbar</dt><dd>Tap a block to choose it</dd>
+            <dt>Boat</dt><dd>Launch, board or leave the boat; the stick sails her</dd>
+            <dt>Map</dt><dd>Planet map; double-tap to teleport</dd>
+            <dt>II</dt><dd>Back to this menu</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-graphics" role="tabpanel" aria-labelledby="tab-graphics" hidden>
+        <div class="controls">
+          <div class="row"><label for="rd">View distance <output id="rd-v"></output></label><input id="rd" type="range" min="3" max="16" step="1"></div>
+          <div class="row"><label for="look">Look <output class="kb-only">G cycles</output></label><select id="look"></select></div>
+          <div class="row"><label for="exposure">Exposure <output id="exposure-v"></output></label><input id="exposure" type="range" min="0.4" max="2.5" step="0.05"></div>
+          <div class="row"><label for="cloudq">Cloud quality <output id="cloudq-v"></output></label><input id="cloudq" type="range" min="0" max="3" step="1"></div>
+          <div class="row"><label for="leaves">Falling leaves <output id="leaves-v"></output></label><input id="leaves" type="range" min="0" max="60000" step="1000"></div>
+          <label class="check" for="shadows"><input id="shadows" type="checkbox"> Sun shadows</label>
+          <div class="label">Effects</div>
+          <div class="fxgrid" id="fx-grid"></div>
+          <div class="seedrow"><button id="fx-all" type="button">All on</button><button id="fx-none" type="button">All off</button></div>
+          <p class="foot">Lower the view distance, cloud quality and effects if the frame rate drops.</p>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-weather" role="tabpanel" aria-labelledby="tab-weather" hidden>
+        <div class="controls">
+          <div class="row"><label for="tod">Time of day <output id="tod-v"></output></label><input id="tod" type="range" min="0" max="23.9" step="0.1"></div>
+          <div class="row"><label for="daylen">Day length <output id="daylen-v"></output></label><input id="daylen" type="range" min="0" max="60" step="5"></div>
+          <div class="label">Climate</div>
+          <div class="row"><label for="wind">Wind strength <output id="wind-v"></output></label><input id="wind" type="range" min="0" max="3" step="0.1"></div>
+          <div class="row"><label for="envTemp">Temperature <output id="envTemp-v"></output></label><input id="envTemp" type="range" min="-20" max="20" step="1"></div>
+          <div class="row"><label for="envHumid">Humidity <output id="envHumid-v"></output></label><input id="envHumid" type="range" min="0.3" max="2" step="0.05"></div>
+          <div class="row"><label for="envClouds">Cloudiness <output id="envClouds-v"></output></label><input id="envClouds" type="range" min="0.5" max="1.6" step="0.05"></div>
+          <div class="row"><label for="envStorms">Storms <output id="envStorms-v"></output></label><input id="envStorms" type="range" min="0" max="3" step="0.1"></div>
+          <div class="row"><label for="envRain">Rain <output id="envRain-v"></output></label><input id="envRain" type="range" min="0" max="3" step="0.1"></div>
+          <div class="row"><label for="envFog">Haze <output id="envFog-v"></output></label><input id="envFog" type="range" min="0" max="4" step="0.1"></div>
+          <div class="seedrow"><button id="env-reset" type="button">Back to the planet's own climate</button></div>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-world" role="tabpanel" aria-labelledby="tab-world" hidden>
+        <div class="controls">
+          <div class="row"><label for="seed">World seed</label>
+            <div class="seedrow"><input id="seed" type="text" inputmode="numeric"><button id="regen" type="button">Grow</button><button id="reseed" type="button">New planet</button></div>
+          </div>
+          <div class="row"><label for="spot">Share this spot <output id="spot-v"></output></label>
+            <div class="seedrow"><input id="spot" type="text" placeholder="paste a shared spot" spellcheck="false" autocomplete="off"><button id="spot-go" type="button">Go</button><button id="spot-share" type="button">Share</button></div>
+          </div>
+          <div class="seedrow"><button id="map-open" type="button">Open the planet map</button></div>
+          <p class="foot">Chunks of 32×32×124 blocks are grown and greedy-meshed on background workers. The frame is lit in HDR and runs through 9 post passes before it reaches you.</p>
+        </div>
+      </section>
+    </div>
+    <div class="sheet-foot">
+      <button id="enter" type="button">Walk into the forest</button>
+      <span class="hint kb-only"><kbd>Enter</kbd></span>
+    </div>
   </div>
 </div>
 
