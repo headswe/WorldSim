@@ -3,7 +3,7 @@
 const BUILD = '/*BUILD*/';
 const CS = 32, CH = 124, P = CS + 2, WL = 30;
 const B = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, SAND: 4, WATER: 5, OAK_LOG: 6, BIRCH_LOG: 7, SPRUCE_LOG: 8,
-  LEAF_RED: 9, LEAF_ORANGE: 10, LEAF_YELLOW: 11, LEAF_BROWN: 12, LEAF_GREEN: 13, LITTER: 14, MOSSY: 15, PLANKS: 16, REED: 27, TUFT: 28, TWIG: 29 };
+  LEAF_RED: 9, LEAF_ORANGE: 10, LEAF_YELLOW: 11, LEAF_BROWN: 12, LEAF_GREEN: 13, LITTER: 14, MOSSY: 15, PLANKS: 16, REED: 27, TUFT: 28, TWIG: 29, SALT: 30 };
 const isPlant = b => b === B.REED || b === B.TUFT;
 const FLOW1 = 17, FALL = 24;
 const isW = b => b === B.WATER || (b >= FLOW1 && b <= FALL);
@@ -227,6 +227,37 @@ gl.bindVertexArray(lineVao);
 const emptyVao = gl.createVertexArray();
 // ---------- weather ----------
 const weather = createWeather(gl);
+// The global atmosphere: the whole planet's weather in layers, simulated on the GPU. It needs
+// float render targets; without them (or if it fails to start) the local sim's own scripted
+// large-scale weather is used instead.
+let atmos = null;
+try { if (post.hasFloat && !/cpuwx/.test(location.hash)) { const nx = +((location.hash.match(/wxnx=(\d+)/) || [])[1] || 512); atmos = createAtmosphere(gl, { nx, ny: nx / 2 }); } } catch (e) { console.warn('global weather off:', e); atmos = null; }
+const atm = { spun: 0, acc: 0, winT: 0, globT: 0, SPIN: +((location.hash.match(/wxspin=(\d+)/) || [])[1] || 1600) };
+// step the global atmosphere in time with the game (one step per quarter second of game time),
+// spin it up from rest over the first frames after the planet arrives, and keep its packed views
+// of the player's surroundings and of the globe fresh. The local sim switches over once spun up.
+function atmosStep(dt) {
+  if (!atmos || !weather.ready) return;
+  atmos.tod = settings.tod; atmos.playerX = state.pos[0]; atmos.playerZ = state.pos[2];
+  atmos.season = [0, 1, 0, -1][settings.season] || 0; atmos.temp = settings.envTemp; atmos.humid = settings.envHumid; atmos.stormMul = settings.envStorms;
+  if (atm.spun < atm.SPIN) {
+    const n = Math.min(atm.SPIN - atm.spun, 10);
+    atmos.run(n); atm.spun += n;
+  } else {
+    atm.acc += dt;
+    const n = Math.min(4, Math.floor(atm.acc / 0.25));
+    if (n > 0) { atmos.run(n); atm.acc -= n * 0.25; }
+    if (atm.acc > 1) atm.acc = 0;
+  }
+  atmos.collect(false);
+  atm.winT -= dt; atm.globT -= dt;
+  if (atm.spun >= atm.SPIN && atm.winT <= 0) {
+    const want = atm.globT <= 0;
+    atmos.request(Math.floor(state.pos[0] / 16) - (atmos.win.w >> 1), Math.floor(state.pos[2] / 16) - (atmos.win.h >> 1), want);
+    atm.winT = 0.25; if (want) atm.globT = 1;
+  }
+  weather.atmos = atmos.win.ready ? atmos : null;
+}
 const localWind = [0.7, 0.2], cloudWind = [0, 0];
 let cloudMean = 0.3;
 const cloudsOn = () => settings.fx.clouds && weather.ready;
@@ -248,6 +279,7 @@ function listenAround() {
   hear.trees = Math.min(1, emitCount / 600 + leaf * 0.4);
 }
 // a few words on the weather for the corner readout
+const baro = { t: 0, hist: [] };
 function weatherWords() {
   if (!weather.ready) return '';
   const [x, , z] = state.pos, ty = weather.typeAt(x, z);
@@ -262,7 +294,11 @@ function weatherWords() {
   if (env.fog2[0] > 0.008 || env.hill > 0.4) sky += ', fog';
   if (env.bow > 0.3) sky += ', rainbow';
   const wind = ms < 2 ? 'calm' : ms < 6 ? `light wind ${ms} m/s` : ms < 12 ? `breezy ${ms} m/s` : ms < 18 ? `strong wind ${ms} m/s` : `gale ${ms} m/s`;
-  return `${T} °C · ${sky} · ${wind}`;
+  // the barometer: pressure and which way it has gone over the last game hour or so
+  const hpa = weather.pressureAt(x, z), now = performance.now();
+  if (!baro.t || now - baro.t > 2500) { baro.hist.push(hpa); if (baro.hist.length > 24) baro.hist.shift(); baro.t = now; }
+  const dp = hpa - baro.hist[0], tr = baro.hist.length < 6 ? '' : dp < -1.2 ? ' falling' : dp > 1.2 ? ' rising' : ' steady';
+  return `${T} °C · ${sky} · ${wind} · ${Math.round(hpa)} hPa${tr}`;
 }
 gl.bindVertexArray(null);
 
@@ -373,7 +409,7 @@ function onPlanetMessage(d) {
 }
 const PLANET_W = 512 * 16, PLANET_H = 256 * 16;
 // ---- planet map and globe ----
-const BIOME_COL = [[38, 74, 120], [232, 238, 244], [150, 146, 118], [58, 96, 66], [196, 112, 44], [164, 160, 88], [214, 190, 132], [70, 140, 58]];
+const BIOME_COL = [[38, 74, 120], [232, 238, 244], [150, 146, 118], [58, 96, 66], [196, 112, 44], [164, 160, 88], [214, 190, 132], [70, 140, 58], [186, 168, 70], [128, 138, 84]];
 let mapPx = null;
 function buildPlanetMap() {
   const { ys, riv, lk, tmp, biome, PW, PH } = planet;
@@ -410,8 +446,20 @@ const MAP_MODES = [
   ['Temperature', 'Cold blue to hot red, falling with latitude and height'],
   ['Drainage', 'How much rain each cell gathers from upstream: the river network'],
   ['Rivers', 'Rivers by size, lakes and deltas over the biomes'],
+  ['Currents', 'Sea temperature against the average for its latitude: warm currents red, cold blue', ['linear-gradient(90deg,#2850d2,#ebebe6,#d23228)', '−6°C', '+6°C']],
+  ['Rain season', 'When the rain falls: green all year, orange mostly in summer, purple mostly in winter; white salt pans', ['linear-gradient(90deg,#8c50be,#3c9646,#e68c28)', 'winter rain', 'summer rain']],
+  ['Moisture', 'Rain against what the warmth could evaporate: parched brown, balanced yellow, wet green to blue', ['linear-gradient(90deg,#a05a28,#e6d278,#50aa50,#2850c8)', 'parched', 'wet']],
+  ['July', 'Temperature in July (northern summer, southern winter)', ['linear-gradient(90deg,#3c5ac8,#ebebdc,#d24628)', '−20°C', '+30°C']],
+  ['January', 'Temperature in January (northern winter, southern summer)', ['linear-gradient(90deg,#3c5ac8,#ebebdc,#d24628)', '−20°C', '+30°C']],
+  ['Sediment', 'Where eroded rock settled: fans at mountain fronts, river plains, filled lakes and deltas', ['linear-gradient(90deg,#1e2024,#a07838,#ffe6a0)', 'none', 'thick']],
 ];
+// keys for the views: 1-9, then 0, - and =
+const MAP_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '='];
+const MAP_CODES = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal'];
 let mapModes = [], mapMode = 0;
+// temperature in July (hs 1) or January (hs -1): the year's mean plus the swing, which runs the
+// other way south of the equator
+function seasonT(k, hs) { const j = Math.floor(k / planet.PW); return planet.L.temp[k] + planet.L.tAmp[k] * hs * (j < planet.PH / 2 ? 1 : -1); }
 function buildMapMode(m) {
   const { PW, PH, L, biome } = planet, PN = PW * PH, px = new Uint8ClampedArray(PN * 4);
   const lerp = (a, b, t) => { t = Math.max(0, Math.min(1, t)); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
@@ -438,6 +486,26 @@ function buildMapMode(m) {
     } else if (m === 4) {
       c = E[k] <= 0 ? [14, 22, 36] : lerp([28, 30, 34], [120, 220, 255], Math.pow(Math.log(1 + L.acc[k]) / Math.log(201), 0.8));
       if (L.lake[k]) c = [70, 120, 220];
+    } else if (m === 6) {
+      // the sea's warmth beside the plain latitude curve (planetTemp): the currents' doing
+      const s = Math.abs(Math.sin(Math.PI / 2 - (j + 0.5) / PH * Math.PI)), a = (L.sst[k] - Math.max(-1.8, 28 - 40 * Math.pow(s, 2.5))) / 6;
+      c = E[k] > 0 ? [70, 70, 70].map(v => v * shade(k)) : a > 0 ? lerp([235, 235, 230], [210, 50, 40], a) : lerp([235, 235, 230], [40, 80, 210], -a);
+    } else if (m === 7) {
+      const north = j < PH / 2, rs = north ? L.rJul[k] : L.rJan[k], rw = north ? L.rJan[k] : L.rJul[k], tot = rs + rw;
+      const t = Math.min(1, Math.sqrt(tot / 1.2)), d = tot > 1e-6 ? (rs - rw) / tot : 0;
+      c = lerp([200, 190, 160], d > 0 ? lerp([60, 150, 70], [230, 140, 40], d * 1.6) : lerp([60, 150, 70], [140, 80, 190], -d * 1.6), t);
+      c = E[k] <= 0 ? lerp(c, [20, 30, 50], 0.7) : L.salt[k] ? [250, 250, 245] : c.map(v => v * shade(k));
+    } else if (m === 8) {
+      const t = L.moist[k];
+      c = t < 0.35 ? lerp([160, 90, 40], [230, 210, 120], t / 0.35) : t < 0.6 ? lerp([230, 210, 120], [80, 170, 80], (t - 0.35) / 0.25) : lerp([80, 170, 80], [40, 80, 200], (t - 0.6) / 0.3);
+      c = E[k] <= 0 ? [20, 30, 50] : L.salt[k] ? [250, 250, 245] : c.map(v => v * shade(k));
+    } else if (m === 9 || m === 10) {
+      const t = (seasonT(k, m === 9 ? 1 : -1) + 20) / 50;
+      c = t < 0.5 ? lerp([60, 90, 200], [235, 235, 220], t * 2) : lerp([235, 235, 220], [210, 70, 40], (t - 0.5) * 2);
+      if (E[k] <= 0) c = lerp(c, [20, 30, 50], 0.55);
+    } else if (m === 11) {
+      const t = Math.min(1, Math.sqrt(L.dep[k] / 0.12));
+      c = E[k] <= 0 ? lerp([14, 22, 36], [90, 110, 120], t) : lerp([30, 32, 36], [160, 120, 56], Math.min(1, t * 2)).map((v, q) => t > 0.5 ? v + ([255, 230, 160][q] - v) * (t - 0.5) * 2 : v).map(v => v * shade(k));
     } else {
       c = E[k] <= 0 ? sea(k) : lerp(BIOME_COL[biome[k]], [255, 255, 255], 0.35).map(v => v * shade(k));
       if (L.lake[k]) c = [60, 120, 210];
@@ -451,7 +519,9 @@ function setMapMode(m) {
   mapMode = m;
   if (planet && planet.L && !mapModes[m]) mapModes[m] = buildMapMode(m);
   [...document.querySelectorAll('#mapmodes button')].forEach((b, i) => b.setAttribute('aria-pressed', String(i === m)));
+  const lg = MAP_MODES[m][2];
   $('mapdesc').textContent = MAP_MODES[m][1];
+  if (lg) $('mapdesc').insertAdjacentHTML('beforeend', ` <span class="maplg"><i>${lg[1]}</i><b style="background:${lg[0]}"></b><i>${lg[2]}</i></span>`);
   drawMap();
 }
 let globeT = 0, globeSpin = 0;
@@ -495,7 +565,7 @@ const OVERLAYS = [
   ['rivers', 'R', 'Rivers'], ['contours', 'H', 'Contours'], ['plates', 'P', 'Plates'], ['wind', 'W', 'Wind & storms'],
   ['clouds', 'C', 'Clouds'], ['grid', 'G', 'Grid'], ['trail', 'T', 'Your trail'],
 ];
-const BIOME_NAMES = ['Ocean', 'Ice', 'Tundra', 'Taiga', 'Autumn forest', 'Grassland', 'Desert', 'Warm forest'];
+const BIOME_NAMES = ['Ocean', 'Ice', 'Tundra', 'Taiga', 'Autumn forest', 'Grassland', 'Desert', 'Warm forest', 'Savanna', 'Scrubland'];
 settings.mapOverlays = Object.assign({ rivers: true, grid: true, trail: true, wind: false, clouds: false, contours: false, plates: false }, settings.mapOverlays || {});
 const overlayCache = {}, trail = [];
 let mapBase = null, mapBaseMode = -1;
@@ -567,7 +637,21 @@ function drawMap() {
   g.imageSmoothingEnabled = true;
   const on = settings.mapOverlays;
   for (const k of ['contours', 'rivers', 'plates', 'grid']) if (on[k]) g.drawImage(overlayCache[k] || (overlayCache[k] = buildOverlay(k)), 0, 0);
-  if (on.clouds && weather.ready) {
+  if (on.clouds && weather.atmos && weather.atmos.glob.ready) {
+    // the whole planet's clouds from the global atmosphere: white where the cloud is thick,
+    // tinted blue where it rains
+    const G = weather.atmos.glob, W = G.w, H = G.h, B = G.data[1], C = G.data[2];
+    const cc = document.createElement('canvas'); cc.width = W; cc.height = H;
+    const im = cc.getContext('2d').createImageData(W, H);
+    for (let n = 0; n < W * H; n++) {
+      const c = Math.min(1, Math.max(0, (B[n * 4 + 1] - 0.06) / 0.5)), r = Math.min(1, C[n * 4] * 12);
+      im.data[n * 4] = 245 - r * 120; im.data[n * 4 + 1] = 248 - r * 70; im.data[n * 4 + 2] = 255;
+      im.data[n * 4 + 3] = Math.max(c * c * (3 - 2 * c) * 200, r * 160);
+    }
+    cc.getContext('2d').putImageData(im, 0, 0);
+    g.drawImage(cc, 0, 0, PW * S, PH * S);
+  }
+  if (on.clouds && weather.ready && !weather.atmos) {
     // the live cloud field around you, as white veils
     const { ox, oz, N, px } = weather.cloudField();
     const cc = document.createElement('canvas'); cc.width = N; cc.height = N;
@@ -597,6 +681,11 @@ function drawMap() {
         for (let t = 0; t <= 1; t += 0.05) { const a = arm * 2.094 + dir * t * 4.2, rr = r * (0.15 + t); g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
         g.stroke();
       }
+    }
+    // thunderstorm cells near the player, brighter while they rain hardest
+    for (const c of weather.cells()) {
+      g.fillStyle = `rgba(255,236,160,${0.25 + 0.6 * c.I})`;
+      g.beginPath(); g.arc(c.x / 16 * S, c.z / 16 * S, Math.max(1.5, c.r / 16 * S * (0.6 + 0.6 * c.I)), 0, 6.283); g.fill();
     }
   }
   if (on.trail && trail.length > 1) {
@@ -633,8 +722,17 @@ function mapHover(e) {
   if (i < 0 || j < 0 || i >= planet.PW || j >= planet.PH) { $('mapinfo').textContent = ''; return; }
   const k = j * planet.PW + i, y = planet.ys[k], lat = 90 - (j + 0.5) / planet.PH * 180;
   const what = planet.lk[k] ? 'Lake' : y < 30 ? (planet.tmp[k] < -3 ? 'Sea ice' : 'Sea') : BIOME_NAMES[planet.biome[k]] + (planet.riv[k] > 8 ? ' · river' : planet.riv[k] ? ' · brook' : '');
-  const rain = planet.L ? ` · rain ${planet.L.rain[k].toFixed(2)}` : '';
-  $('mapinfo').textContent = `x ${i * 16 + 8}  z ${j * 16 + 8} · ${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'} · ${what} · height ${y} · ${planet.tmp[k]}°C${rain}`;
+  let more = '';
+  const L = planet.L;
+  if (L) {
+    if (y < 30 && !planet.lk[k]) more = ` · sea ${L.sst[k].toFixed(1)}°C`;
+    else {
+      const jul = seasonT(k, 1), jan = seasonT(k, -1), rs = L.rJul[k] + L.rJan[k];
+      more = ` · Jul ${jul.toFixed(0)}° Jan ${jan.toFixed(0)}° · rain ${L.rain[k].toFixed(2)} (${rs > 1e-6 ? Math.round(L.rJul[k] / rs * 100) : 50}% in Jul) · moisture ${Math.round(L.moist[k] * 100)}%`
+        + (L.salt[k] ? ' · salt pan' : '') + (L.dep[k] > 0.01 ? ` · sediment ${L.dep[k].toFixed(2)}` : '');
+    }
+  }
+  $('mapinfo').textContent = `x ${i * 16 + 8}  z ${j * 16 + 8} · ${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'} · ${what} · height ${y} · ${planet.tmp[k]}°C${more}`;
 }
 function toggleMap(on) {
   const mv = $('mapview'), was = mv.hidden;
@@ -680,7 +778,7 @@ function initMapModes() {
   $('map').addEventListener('pointerleave', () => { $('mapinfo').textContent = ''; });
   MAP_MODES.forEach(([name], i) => {
     const b = document.createElement('button');
-    b.type = 'button'; b.innerHTML = `<kbd>${i + 1}</kbd> ${name}`;
+    b.type = 'button'; b.innerHTML = `<kbd>${MAP_KEYS[i]}</kbd> ${name}`;
     b.addEventListener('click', () => setMapMode(i));
     bar.appendChild(b);
   });
@@ -708,7 +806,7 @@ function dispatch(msg, transfer) {
   let best = workers[0];
   for (const w of workers) if (w.jobs < best.jobs) best = w;
   best.jobs++;
-  msg.seed = settings.seed; msg.gen = worldGen; msg.bare = settings.season === 3;
+  msg.seed = settings.seed; msg.gen = worldGen; msg.bare = settings.season === 3; msg.season = settings.season;
   best.postMessage(msg, transfer || []);
 }
 
@@ -949,10 +1047,11 @@ function regrowChunks() {
   emitDirty = true;
 }
 function setSeason(i, toast) {
-  const wasBare = settings.season === 3;
+  const was = settings.season;
   settings.season = ((i % 4) + 4) % 4;
   saveSettings(); syncSeason();
-  if (wasBare !== (settings.season === 3)) regrowChunks();
+  // (every season regrows: leaves, lying snow and frozen lakes all change with it)
+  if (was !== settings.season) regrowChunks();
   if (toast) showToast(SEASONS[settings.season]);
   weather.setSeason(settings.season);
 }
@@ -1167,8 +1266,8 @@ function placeBlock() {
 // ---------- sun & sky ----------
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const env = { foliage: 1, seaWind: [0.8, 0.6, 1], rain: 0, flash: null, flashI: 0,
-  precip: 0, overcast: 0, snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
-let outflowT = 0, outflow = [0, 0, 0], snowAt = null;
+  precip: 0, overcast: 0, flood: 0, swell: [1, 0, 0], snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
+let outflowT = 0, outflow = [0, 0, 0], snowAt = null, swellT = 0, swellTgt = [1, 0, 0];
 const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (((Math.floor(x) % HM) + HM) % HM)];
 // What the weather is doing where the player stands, and what it leaves on the ground.
 // Precipitation falls as rain or snow by the air temperature at the player (sleet in between).
@@ -1179,7 +1278,7 @@ const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (
 function updateWeatherEnv(dt) {
   const [x, y, z] = state.pos, on = weather.ready && cloudsOn();
   const gy = Math.max(groundAt(x, z) || 0, 31);
-  const T = weather.ready ? weather.tempAt(x, z, gy) - outflow[2] : 10;
+  const T = weather.ready ? weather.tempAt(x, z, gy) : 10;
   env.temp = T;
   const r = on ? Math.min(1, Math.max(0, weather.rainAt(x, z) - 0.08) / 0.6) * (1 - smooth(290, 320, y)) : 0;
   env.precip += (r - env.precip) * Math.min(1, dt / 3);
@@ -1226,6 +1325,10 @@ function updateWeatherEnv(dt) {
     bow = smooth(0.2, 0.55, ahead) * (1 - smooth(0.55, 0.85, sunSide)) * smooth(42, 32, env.sunEl) * smooth(0, 3, env.sunEl) * (1 - env.snowFrac);
   }
   env.bow += (bow - env.bow) * Math.min(1, dt / 3);
+  // rivers and lakes: high and muddy for a while after the catchment has been soaked, low after a
+  // dry spell; they follow the soil with a lag, as the water takes time to drain down to them
+  const fl = on ? Math.max(-1, Math.min(1, weather.soilWet * 3.2)) : 0;
+  env.flood += (fl - env.flood) * Math.min(1, dt / (fl > env.flood ? 45 : 120));
   // tests can pin any of these (window.__emberwood.wxForce = { wet: 1 })
   if (wxForce) Object.assign(env, wxForce);
 }
@@ -1339,7 +1442,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.precip + 0.6 * env.snowFall + 5 * env.hill) * Math.sqrt(settings.envFog));
   setU(pr, 'uWet', env.wet); setI(pr, 'uSnowMap', 15); setU(pr, 'uSnowO', weather.snowOrigin); setU(pr, 'uFog2', env.fog2); setU(pr, 'uRainVeil', weather.ready && weather.maxRain > 0.25 ? 1 : 0);
   setU(pr, 'uAmbSky', env.ambSky); setU(pr, 'uAmbGround', env.ambGround);
-  setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind);
+  setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind); setU(pr, 'uSwell', env.swell); setU(pr, 'uFlood', env.flood);
   setU(pr, 'uEnc', post.enc);
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
@@ -1883,7 +1986,7 @@ function look(dx, dy) {
 window.addEventListener('wheel', e => { if (playing) selectSlot(state.slot + (e.deltaY > 0 ? 1 : -1)); }, { passive: true });
 window.addEventListener('keydown', e => {
   if (!$('mapview').hidden && (e.code === 'Escape' || e.code === 'KeyM')) { toggleMap(false); e.preventDefault(); return; }
-  if (!$('mapview').hidden && /^Digit[1-6]$/.test(e.code)) { setMapMode(Number(e.code.slice(5)) - 1); e.preventDefault(); return; }
+  if (!$('mapview').hidden && MAP_CODES.indexOf(e.code) >= 0 && MAP_CODES.indexOf(e.code) < MAP_MODES.length) { setMapMode(MAP_CODES.indexOf(e.code)); e.preventDefault(); return; }
   if (!$('mapview').hidden) { const o = OVERLAYS.find(o => 'Key' + o[1] === e.code); if (o) { toggleOverlay(o[0]); e.preventDefault(); return; } }
   if (e.code === 'KeyM' && document.activeElement?.tagName !== 'INPUT') { toggleMap(true); return; }
   if (!playing) {
@@ -1977,8 +2080,13 @@ function frameBody(now) {
   processResults();
   updateChunks();
   simStep(dt);
-  if (planet && !weather.ready && state.spawned) weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
-  weather.windMul = settings.wind; weather.tod = settings.tod;
+  if (planet && !weather.ready && state.spawned) {
+    weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
+    if (atmos) { try { atmos.reset(planet); atm.spun = 0; } catch (e) { console.warn('global weather off:', e); atmos = null; } }
+    weather.atmos = null;
+  }
+  atmosStep(dt);
+  weather.windMul = settings.wind; weather.tod = settings.tod; weather.dayLen = (settings.daylen || 20) * 60;
   weather.humid = settings.envHumid; weather.cloudy = settings.envClouds; weather.stormMul = settings.envStorms; weather.rainMul = settings.envRain;
   if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }
   weather.update(dt, state.pos[0], state.pos[2]);
@@ -1989,10 +2097,11 @@ function frameBody(now) {
   // foliage sway, the falling leaves and the sea state; smoothed over a few seconds
   {
     const w = weather.ready ? weather.windAt(state.pos[0] / 16, state.pos[2] / 16) : [0.7, 0.2];
-    // a thunderstorm's gust front: rain-cooled air pouring out ahead of the storm
+    // a thunderstorm's gust front (rain-cooled air pouring out ahead of the storm) is part of the
+    // simulated wind; its strength here makes the wind gustier
     if (weather.ready && now - outflowT > 250) { outflowT = now; outflow = weather.outflowAt(state.pos[0], state.pos[2]); }
     const k = Math.min(1, dt / 1.5);
-    localWind[0] += ((w[0] + outflow[0]) * settings.wind - localWind[0]) * k; localWind[1] += ((w[1] + outflow[1]) * settings.wind - localWind[1]) * k;
+    localWind[0] += (w[0] * settings.wind - localWind[0]) * k; localWind[1] += (w[1] * settings.wind - localWind[1]) * k;
     const sp0 = Math.hypot(localWind[0], localWind[1]);
     // gusts: the wind comes in bursts, more so when it is strong and in stormy air
     const t = now / 1000, g = 0.5 * Math.sin(t * 0.37) + 0.3 * Math.sin(t * 1.13 + 1.7) + 0.2 * Math.sin(t * 2.71 + 4.1);
@@ -2002,6 +2111,12 @@ function frameBody(now) {
     env.windSpeed = sp;
     env.foliage = Math.min(3, sp * 1.1);
     env.seaWind = [localWind[0] / (sp0 || 1), localWind[1] / (sp0 || 1), Math.min(2.2, 0.15 + sp0 * 0.95)];
+    // swell from storms out at sea: it builds and dies away slowly, as the waves take hours to
+    // arrive; the boat reads it from the wind array so it rides the same waves the sea draws
+    if (weather.ready && now - swellT > 500) { swellT = now; swellTgt = weather.swellAt(state.pos[0], state.pos[2]); }
+    const ks = Math.min(1, dt / 40);
+    env.swell = [env.swell[0] + (swellTgt[0] - env.swell[0]) * ks, env.swell[1] + (swellTgt[1] - env.swell[1]) * ks, env.swell[2] + (swellTgt[2] - env.swell[2]) * ks];
+    env.seaWind.swell = env.swell;
   }
   updateWeatherEnv(dt);
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up

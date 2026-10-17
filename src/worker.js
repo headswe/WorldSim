@@ -2,11 +2,14 @@
 // Runs off the main thread; one instance per worker in the pool.
 const CS = 32, CH = 124, P = CS + 2, WL = 30, CELL = 5, FR = 12;
 let BARE = false; // winter: deciduous trees stand bare
+// the season's swing of the temperature: +1 summer, -1 winter (spring and autumn sit at the year's mean)
+let SEAS = 0;
 const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WATER = 5,
   OAK_LOG = 6, BIRCH_LOG = 7, SPRUCE_LOG = 8,
   LEAF_RED = 9, LEAF_ORANGE = 10, LEAF_YELLOW = 11, LEAF_BROWN = 12, LEAF_GREEN = 13,
   LITTER = 14, MOSSY = 15, PLANKS = 16, FLOW1 = 17, FALL = 24, SNOW = 25, ICE = 26,
-  REED = 27, TUFT = 28, TWIG = 29; // cross-quad plants: reeds and cattails (two blocks tall), grass tufts
+  REED = 27, TUFT = 28, TWIG = 29, // cross-quad plants: reeds and cattails (two blocks tall), grass tufts
+  SALT = 30; // white salt crust on the floor of a dried-up lake
 const isPlant = b => b === REED || b === TUFT;
 // water: WATER is a source, FLOW1..FLOW7 (17..23) are flowing levels 1..7, FALL is a falling column
 const isWater = b => b === WATER || (b >= FLOW1 && b <= FALL);
@@ -50,6 +53,7 @@ function setSeed(s) {
   for (let k = 0; k < PN; k++) {
     cellY[k] = elevToY(PL.elev[k]);
     lakeY[k] = PL.lake[k] > 0 ? Math.floor(elevToY(PL.lake[k])) : 0;
+    saltF[k] = PL.salt[k]; basinF[k] = PL.basin[k];
   }
   // how well watered each cell is: land rain ranked 0..1, plus a halo around rivers and lakes
   {
@@ -89,7 +93,7 @@ const hash3 = (x, y, z) => hash(x + Math.imul(y, 7919), z, 99);
 // The planet simulation gives the large-scale height (one value per 16x16 cell, smoothly
 // interpolated); local noise adds hills, rough mountain ridges and terraced cliff bands.
 let PL = null, planetProgress = () => {};
-const cellY = new Float32Array(PN), lakeY = new Float32Array(PN), rainN = new Float32Array(PN), wetF = new Float32Array(PN);
+const cellY = new Float32Array(PN), lakeY = new Float32Array(PN), rainN = new Float32Array(PN), wetF = new Float32Array(PN), saltF = new Float32Array(PN), basinF = new Float32Array(PN);
 // land rises quickly off the coast (so lowland rivers still sit in valleys) and then more slowly
 // toward the peaks
 const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -116,9 +120,9 @@ function rawHeight(x, z) {
   const land = Math.min(1, Math.max(0, (Y - WL) / 5));
   const mount = Math.min(1, Math.max(0, (Y - 42) / 18));
   const b = nB(x / 95, z / 95), c = nC(x / 28, z / 28);
-  // plains keep only a gentle swell of the local hills
-  const pl = fieldAt(PL.plain, x, z);
-  let h = Y + (b * 4.5 + c * 1.5) * (0.25 + 0.75 * land) * (1 - 0.75 * pl);
+  // plains keep only a gentle swell of the local hills, and the floor of a dried-up lake is flat
+  const pl = Math.max(fieldAt(PL.plain, x, z), fieldAt(basinF, x, z) * 1.25);
+  let h = Y + (b * 4.5 + c * 1.5) * (0.25 + 0.75 * land) * Math.max(0.05, 1 - 0.75 * pl);
   if (mount > 0) {
     // ridged multifractal on the plate ranges: knife-edge crests, steep faces, and each octave
     // only adds detail where the one above it is already high (peaks get rougher than valleys)
@@ -176,7 +180,7 @@ function baseHeight(x, z) {
   let shore = (h0 - WL - 1) / 6; shore = shore < 0 ? 0 : shore > 1 ? 1 : shore;
   // glaciated ground was planed smooth by ice, so rain gullies fade out under it
   const k0 = cellAt(x, z), frost = Math.min(1, Math.max(fieldAt(PL.ice, x, z), -(PL.temp[k0] - (h0 - cellY[k0]) * 0.25) / 6));
-  const steep0 = Math.min(1, Math.hypot(sx, sz) * 2.5) * shore * shore * (3 - 2 * shore) * (1 - Math.max(0, frost)) * (1 - fieldAt(PL.plain, x, z));
+  const steep0 = Math.min(1, Math.hypot(sx, sz) * 2.5) * shore * shore * (3 - 2 * shore) * (1 - Math.max(0, frost)) * Math.max(0, 1 - fieldAt(PL.plain, x, z) - fieldAt(basinF, x, z) * 1.5);
   let h = h0, amp = EROSION_AMP, freq = 1 / 44, ero = 0;
   if (steep0 > 0.01)
     for (let o = 0; o < 3; o++) {
@@ -274,7 +278,8 @@ function computeLevels() {
   segCache.clear();
 }
 const cellLevel = k => riverLV[k];
-const isRiverCell = k => PL.elev[k] > 0 && PL.acc[k] >= BROOK_MIN && PL.area[k] >= BROOK_AREA && !(lakeY[k] && PL.recv[k] >= 0 && lakeY[PL.recv[k]]);
+// (nothing runs across the dry floor of a basin whose lake has shrunk or dried up: its streams end at the edge)
+const isRiverCell = k => PL.elev[k] > 0 && PL.acc[k] >= BROOK_MIN && PL.area[k] >= BROOK_AREA && !PL.basin[k] && !(lakeY[k] && PL.recv[k] >= 0 && lakeY[PL.recv[k]]);
 // a real river (not a headwater brook): these carve the big valleys, feed the forests and show on the map
 const isMainRiver = k => isRiverCell(k) && PL.acc[k] >= RIVER_MIN && PL.area[k] >= RIVER_AREA;
 function cellSegs(ci, cj) {
@@ -597,6 +602,10 @@ function waterTop(x, z) { const r = riverAt(x, z); return r && r.core ? r.L : Ma
 // biome with ragged borders; local temperature also falls with height above the cell's mean
 function biomeAt(x, z) { return PL.biome[cellAt(x + nD(x / 40, z / 40) * 14, z + nE(x / 40, z / 40) * 14)]; }
 function tempAt(x, z, y) { const k = cellAt(x, z); return PL.temp[k] - (y - cellY[k]) * 0.25 + nL(x / 23, z / 23) * 1.5; }
+// the same in the current season: what decides whether snow lies and lakes and seas freeze over
+function seasonTempAt(x, z, y) { return tempAt(x, z, y) + SEAS * fieldAt(PL.tAmp, x, z); }
+// salt crust on the dry floor of a basin whose lake has shrunk or dried up, with a ragged edge
+function saltAt(x, z) { return fieldAt(saltF, x, z) + nD(x / 30, z / 30) * 0.25 > 0.5; }
 function inRiver(x, z) { const r = riverAt(x, z); return !!r && (r.core || r.d < 1.5); }
 
 // ---------- features (trees, bushes, boulders, fallen logs) ----------
@@ -605,7 +614,7 @@ function feature(cx, cz) {
   const x = cx * CELL + 1 + Math.floor(hash(cx, cz, 2) * (CELL - 2));
   const z = cz * CELL + 1 + Math.floor(hash(cx, cz, 3) * (CELL - 2));
   const h = heightAt(x, z);
-  if (h <= WL + 1 || inRiver(x, z)) return null;
+  if (h <= WL + 1 || inRiver(x, z) || saltAt(x, z)) return null;
   // nothing takes root on bare rock walls of gullies and cliffs
   if (Math.max(h - heightAt(x + 1, z), h - heightAt(x - 1, z), h - heightAt(x, z + 1), h - heightAt(x, z - 1)) >= 3) return null;
   // forests thicken with rain and crowd along rivers and lakes; they thin toward the tree line
@@ -627,12 +636,17 @@ function feature(cx, cz) {
     case BIOME.TUNDRA: treeP = 0.04; type = k < 0.7 ? 'spruce' : 'larch'; break;
     case BIOME.GRASS: treeP = dens * 0.06; type = k < 0.5 ? 'oak' : 'birch'; break;
     case BIOME.WARM: treeP = dens * 0.7; type = k < 0.75 ? 'green' : k < 0.9 ? 'oak' : 'maple'; break;
+    // savanna: lone flat-topped trees over tall grass, thicker in the wetter stretches and along rivers
+    case BIOME.SAVANNA: treeP = 0.03 + dens * 0.1 + fieldAt(wetF, x, z) * 0.25; type = k < 0.8 ? 'green' : 'oak'; break;
+    // Mediterranean scrub: evergreen oaks and pines dotted through thickets of shrubs
+    case BIOME.SCRUB: treeP = dens * 0.2; type = k < 0.6 ? 'oak' : k < 0.85 ? 'green' : 'spruce'; break;
     default: treeP = 0; // desert
   }
   if (r < treeP) return { type, x, z, h, k, k2, big: hash(cx, cz, 9) < 0.07 && type !== 'birch' && type !== 'larch' };
   if (r > 0.975) return { type: 'boulder', x, z, h, k, k2 };
-  const bushP = bio === BIOME.GRASS ? 0.12 : bio === BIOME.DESERT ? 0.015 : bio === BIOME.TUNDRA ? 0.06 : 0.04;
-  if (r > 0.975 - bushP) return { type: 'bush', x, z, h, k, k2 };
+  const bushP = bio === BIOME.SCRUB ? 0.32 : bio === BIOME.SAVANNA ? 0.08 : bio === BIOME.GRASS ? 0.12 : bio === BIOME.DESERT ? 0.015 : bio === BIOME.TUNDRA ? 0.06 : 0.04;
+  // (shrubs of the warm dry lands keep their leaves all year)
+  if (r > 0.975 - bushP) return { type: 'bush', x, z, h, k, k2, ever: bio === BIOME.SCRUB || bio === BIOME.SAVANNA };
   if (r > 0.925 && bio !== BIOME.DESERT) return { type: 'fallen', x, z, h, k, k2 };
   return null;
 }
@@ -763,9 +777,10 @@ function treeShape(f) {
 const DECIDUOUS = { maple: 1, oak: 1, birch: 1, larch: 1, bush: 1 };
 function placeLeaves(f, set) {
   if (f.type === 'boulder' || f.type === 'fallen') return;
-  const bare = BARE && DECIDUOUS[f.type];
+  const bare = BARE && DECIDUOUS[f.type] && !f.ever;
   if (f.type === 'bush') {
-    if (!bare) blob(set, f.x, f.h + 1, f.z, 1.7, 1.3, 1.7, f.k2 < 0.5 ? LEAF_RED : LEAF_BROWN, LEAF_ORANGE, 0.2);
+    if (f.ever) blob(set, f.x, f.h + 1, f.z, 1.7, 1.2, 1.7, LEAF_GREEN, LEAF_BROWN, 0.25);
+    else if (!bare) blob(set, f.x, f.h + 1, f.z, 1.7, 1.3, 1.7, f.k2 < 0.5 ? LEAF_RED : LEAF_BROWN, LEAF_ORANGE, 0.2);
     return;
   }
   if (f.type === 'spruce' || f.type === 'larch') {
@@ -878,17 +893,20 @@ function genPadded(cx, cz) {
       const wx = ox + x, wz = oz + z, h = colH[z * P + x], rv = riverAt(wx, wz);
       const wt = rv && rv.core ? rv.L : Math.max(WL, lakeAt(wx, wz));
       const bio = biomeAt(wx, wz), cold = tempAt(wx, wz, Math.max(h, wt));
-      colW[z * P + x] = wt; colT[z * P + x] = cold;
+      // snow lying and water frozen over follow the season; glaciers only the year's mean
+      const coldS = cold + SEAS * fieldAt(PL.tAmp, wx, wz), salt = saltAt(wx, wz);
+      colW[z * P + x] = wt; colT[z * P + x] = salt ? -99 : coldS;
       const hx0 = colH[z * P + Math.max(0, x - 1)], hx1 = colH[z * P + Math.min(P - 1, x + 1)];
       const hz0 = colH[Math.max(0, z - 1) * P + x], hz1 = colH[Math.min(P - 1, z + 1) * P + x];
       const drop = Math.max(h - hx0, h - hx1, h - hz0, h - hz1), ero = colE[z * P + x];
       let top, soil = 3;
       if (h < wt && wt > WL) top = hash(wx, wz, 5) < 0.3 ? MOSSY : DIRT; // river bed
       else if (h < wt) top = h < wt - 2 && hash(wx, wz, 5) < 0.5 ? DIRT : SAND;
-      else if (h <= WL + 1 && nearSea(wx, wz)) top = cold < -2 ? SNOW : bio === BIOME.TUNDRA && hash(wx, wz, 5) < 0.5 ? DIRT : SAND;
-      else if (h <= WL + 1 && cold >= -2) top = hash(wx, wz, 5) < 0.35 ? MOSSY : GRASS; // low wet ground: marsh
+      else if (h <= WL + 1 && nearSea(wx, wz)) top = coldS < -2 ? SNOW : bio === BIOME.TUNDRA && hash(wx, wz, 5) < 0.5 ? DIRT : SAND;
+      else if (salt && drop === 0 && h <= planetY(wx, wz) + 1.5) { top = SALT; soil = 4; } // salt pan, on the flat floor only
+      else if (h <= WL + 1 && coldS >= -2) top = hash(wx, wz, 5) < 0.35 ? MOSSY : GRASS; // low wet ground: marsh
       else if (cold < -8 && drop <= 1 && !(rv && rv.d < 3)) { top = ICE; soil = 2; } // glacier ice in the high cold troughs
-      else if (cold < -2) { top = SNOW; if (drop >= 3) soil = 0; } // snow lies on every ledge above the snow line
+      else if (coldS < -2) { top = SNOW; if (drop >= 3) soil = 0; } // snow lies on every ledge above the snow line
       else if (drop >= 3 || (drop >= 2 && ero > 0.6)) { top = STONE; soil = 0; } // bare rock on steep ridges and gully walls
       else if (bio === BIOME.DESERT) { top = SAND; soil = 4; }
       else if (ero < -2.2 && drop <= 1) top = hash(wx, wz, 7) < 0.35 ? MOSSY : DIRT; // washed-out sediment in gully floors
@@ -897,12 +915,14 @@ function genPadded(cx, cz) {
       else if (bio === BIOME.AUTUMN) top = nL(wx / 14, wz / 14) + hash(wx, wz, 6) * 0.35 > 0.5 ? LITTER : GRASS;
       else if (bio === BIOME.TAIGA) top = hash(wx, wz, 6) < 0.25 ? MOSSY : nL(wx / 14, wz / 14) > 0.55 ? LITTER : GRASS;
       else if (bio === BIOME.GRASS) top = hash(wx, wz, 6) < 0.08 ? DIRT : GRASS;
+      else if (bio === BIOME.SAVANNA) top = hash(wx, wz, 6) < 0.12 ? DIRT : GRASS;
+      else if (bio === BIOME.SCRUB) top = hash(wx, wz, 6) < 0.14 ? DIRT : hash(wx, wz, 9) < 0.08 ? STONE : nL(wx / 14, wz / 14) > 0.6 ? LITTER : GRASS;
       else top = hash(wx, wz, 6) < 0.15 ? MOSSY : GRASS;
       const under = bio === BIOME.DESERT ? SAND : DIRT;
       const sub = top === ICE ? ICE : under;
       for (let y = 0; y <= h; y++) vol[(y * P + z) * P + x] = y < h - soil ? STONE : y < h ? sub : top;
       for (let y = h + 1; y <= wt; y++) vol[(y * P + z) * P + x] = WATER;
-      if (wt > h && cold < -3) vol[(wt * P + z) * P + x] = ICE; // frozen seas and lakes
+      if (wt > h && coldS < -3) vol[(wt * P + z) * P + x] = ICE; // frozen seas and lakes
     }
   const set = (wx, y, wz, b, onlyAir) => {
     const x = wx - ox, z = wz - oz;
@@ -956,7 +976,7 @@ function placePlants(vol, ox, oz) {
       }
       if (top === SAND) continue;
       const bio = biomeAt(wx, wz);
-      const tp = bio === BIOME.GRASS ? 0.22 : bio === BIOME.DESERT ? 0.01 : bio === BIOME.TUNDRA ? 0.08 : top === LITTER ? 0.015 : 0.06;
+      const tp = bio === BIOME.GRASS ? 0.22 : bio === BIOME.SAVANNA ? 0.3 : bio === BIOME.SCRUB ? 0.1 : bio === BIOME.DESERT ? 0.01 : bio === BIOME.TUNDRA ? 0.08 : top === LITTER ? 0.015 : 0.06;
       if (hash(wx, wz, 23) < tp * (0.5 + nD(wx / 40, wz / 40))) vol[((h + 1) * P + z) * P + x] = TUFT;
     }
 }
@@ -1210,13 +1230,18 @@ function handleJob(m) {
     }
     const biome = PL.biome.slice();
     // raw fields for the map's study views (plates, rain, temperature, drainage, rivers)
-    const L = { elev: Float32Array.from(PL.elev), rain: Float32Array.from(PL.rain), temp: Float32Array.from(PL.temp), acc: Float32Array.from(PL.acc), lake: Float32Array.from(PL.lake), plate: Int32Array.from(PL.plate) };
+    // (sst: sea-surface temperature with the ocean currents, °C; tAmp: half the yearly temperature swing;
+    // rJul/rJan: rain in northern summer and winter; moist: 0 parched .. 0.5 rain matches evaporation .. 1 wet;
+    // dep: how much eroded rock settled in each cell)
+    const L = { elev: Float32Array.from(PL.elev), rain: Float32Array.from(PL.rain), temp: Float32Array.from(PL.temp), acc: Float32Array.from(PL.acc), lake: Float32Array.from(PL.lake), plate: Int32Array.from(PL.plate),
+      sst: Float32Array.from(PL.sst), tAmp: Float32Array.from(PL.tAmp), rJul: Float32Array.from(PL.rJul), rJan: Float32Array.from(PL.rJan), moist: Float32Array.from(PL.moist), salt: Uint8Array.from(PL.salt), dep: Float32Array.from(PL.dep) };
     postMessage({ type: 'planet', gen: m.gen, seed: m.seed, PW, PH, PCELL, ys, riv, lk, tmp, biome, L },
       [ys.buffer, riv.buffer, lk.buffer, tmp.buffer, biome.buffer, ...Object.values(L).map(a => a.buffer)]);
     return;
   }
   setSeed(m.seed);
   BARE = !!m.bare;
+  SEAS = m.season === 1 ? 1 : m.season === 3 ? -1 : 0;
   let vol, blocks = null;
   if (m.padded) vol = m.padded;
   else {
