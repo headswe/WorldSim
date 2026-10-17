@@ -227,6 +227,37 @@ gl.bindVertexArray(lineVao);
 const emptyVao = gl.createVertexArray();
 // ---------- weather ----------
 const weather = createWeather(gl);
+// The global atmosphere: the whole planet's weather in layers, simulated on the GPU. It needs
+// float render targets; without them (or if it fails to start) the local sim's own scripted
+// large-scale weather is used instead.
+let atmos = null;
+try { if (post.hasFloat && !/cpuwx/.test(location.hash)) { const nx = +((location.hash.match(/wxnx=(\d+)/) || [])[1] || 512); atmos = createAtmosphere(gl, { nx, ny: nx / 2 }); } } catch (e) { console.warn('global weather off:', e); atmos = null; }
+const atm = { spun: 0, acc: 0, winT: 0, globT: 0, SPIN: +((location.hash.match(/wxspin=(\d+)/) || [])[1] || 1600) };
+// step the global atmosphere in time with the game (one step per quarter second of game time),
+// spin it up from rest over the first frames after the planet arrives, and keep its packed views
+// of the player's surroundings and of the globe fresh. The local sim switches over once spun up.
+function atmosStep(dt) {
+  if (!atmos || !weather.ready) return;
+  atmos.tod = settings.tod; atmos.playerX = state.pos[0]; atmos.playerZ = state.pos[2];
+  atmos.season = [0, 1, 0, -1][settings.season] || 0; atmos.temp = settings.envTemp; atmos.humid = settings.envHumid; atmos.stormMul = settings.envStorms;
+  if (atm.spun < atm.SPIN) {
+    const n = Math.min(atm.SPIN - atm.spun, 10);
+    atmos.run(n); atm.spun += n;
+  } else {
+    atm.acc += dt;
+    const n = Math.min(4, Math.floor(atm.acc / 0.25));
+    if (n > 0) { atmos.run(n); atm.acc -= n * 0.25; }
+    if (atm.acc > 1) atm.acc = 0;
+  }
+  atmos.collect(false);
+  atm.winT -= dt; atm.globT -= dt;
+  if (atm.spun >= atm.SPIN && atm.winT <= 0) {
+    const want = atm.globT <= 0;
+    atmos.request(Math.floor(state.pos[0] / 16) - (atmos.win.w >> 1), Math.floor(state.pos[2] / 16) - (atmos.win.h >> 1), want);
+    atm.winT = 0.25; if (want) atm.globT = 1;
+  }
+  weather.atmos = atmos.win.ready ? atmos : null;
+}
 const localWind = [0.7, 0.2], cloudWind = [0, 0];
 let cloudMean = 0.3;
 const cloudsOn = () => settings.fx.clouds && weather.ready;
@@ -606,7 +637,21 @@ function drawMap() {
   g.imageSmoothingEnabled = true;
   const on = settings.mapOverlays;
   for (const k of ['contours', 'rivers', 'plates', 'grid']) if (on[k]) g.drawImage(overlayCache[k] || (overlayCache[k] = buildOverlay(k)), 0, 0);
-  if (on.clouds && weather.ready) {
+  if (on.clouds && weather.atmos && weather.atmos.glob.ready) {
+    // the whole planet's clouds from the global atmosphere: white where the cloud is thick,
+    // tinted blue where it rains
+    const G = weather.atmos.glob, W = G.w, H = G.h, B = G.data[1], C = G.data[2];
+    const cc = document.createElement('canvas'); cc.width = W; cc.height = H;
+    const im = cc.getContext('2d').createImageData(W, H);
+    for (let n = 0; n < W * H; n++) {
+      const c = Math.min(1, Math.max(0, (B[n * 4 + 1] - 0.06) / 0.5)), r = Math.min(1, C[n * 4] * 12);
+      im.data[n * 4] = 245 - r * 120; im.data[n * 4 + 1] = 248 - r * 70; im.data[n * 4 + 2] = 255;
+      im.data[n * 4 + 3] = Math.max(c * c * (3 - 2 * c) * 200, r * 160);
+    }
+    cc.getContext('2d').putImageData(im, 0, 0);
+    g.drawImage(cc, 0, 0, PW * S, PH * S);
+  }
+  if (on.clouds && weather.ready && !weather.atmos) {
     // the live cloud field around you, as white veils
     const { ox, oz, N, px } = weather.cloudField();
     const cc = document.createElement('canvas'); cc.width = N; cc.height = N;
@@ -2035,7 +2080,12 @@ function frameBody(now) {
   processResults();
   updateChunks();
   simStep(dt);
-  if (planet && !weather.ready && state.spawned) weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
+  if (planet && !weather.ready && state.spawned) {
+    weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
+    if (atmos) { try { atmos.reset(planet); atm.spun = 0; } catch (e) { console.warn('global weather off:', e); atmos = null; } }
+    weather.atmos = null;
+  }
+  atmosStep(dt);
   weather.windMul = settings.wind; weather.tod = settings.tod; weather.dayLen = (settings.daylen || 20) * 60;
   weather.humid = settings.envHumid; weather.cloudy = settings.envClouds; weather.stormMul = settings.envStorms; weather.rainMul = settings.envRain;
   if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }

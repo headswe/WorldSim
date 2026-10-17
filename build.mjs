@@ -12,7 +12,7 @@ if (existsSync(dir + 'sfx')) for (const f of readdirSync(dir + 'sfx').sort()) {
 const body = r('src/page.html')
   .replace('/*WORKER*/', () => r('src/planet.js') + '\n' + r('src/worker.js'))
   .replace('/*SHADERS*/', () => r('src/shaders.js'))
-  .replace('/*POST*/', () => r('src/post.js') + '\n' + r('src/clouds.js') + '\n' + r('src/ocean.js') + '\n' + r('src/boat.js') + '\n' + r('src/audio.js').replace('/*SFX*/{}', () => JSON.stringify(sfx)))
+  .replace('/*POST*/', () => r('src/post.js') + '\n' + r('src/clouds.js') + '\n' + r('src/atmos.js') + '\n' + r('src/ocean.js') + '\n' + r('src/boat.js') + '\n' + r('src/audio.js').replace('/*SFX*/{}', () => JSON.stringify(sfx)))
   .replace('/*MAIN*/', () => r('src/main.js').replace('/*BUILD*/', r('VERSION').trim()));
 writeFileSync(dir + 'emberwood.html', body);
 writeFileSync(dir + 'index.html', '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n</head>\n<body>\n' + body + '\n</body>\n</html>\n');
