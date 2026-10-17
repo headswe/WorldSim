@@ -22,7 +22,7 @@ const HOTBAR = [
 
 // ---------- settings ----------
 const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: true, flare: true, ssr: true,
-  caustics: true, ocean: true, mist: true, clouds: true, cloudSim: true,
+  caustics: true, ocean: true, mist: true, clouds: true,
   // volumetric cloud render scale (of the screen); phones default to lower
   cloudQ: matchMedia('(pointer: coarse)').matches ? 1 : 2, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
@@ -258,8 +258,7 @@ function atmosStep(dt) {
   }
   weather.atmos = atmos.win.ready ? atmos : null;
 }
-const localWind = [0.7, 0.2], cloudWind = [0, 0];
-let cloudMean = 0.3;
+const localWind = [0.7, 0.2];
 const cloudsOn = () => settings.fx.clouds && weather.ready;
 // ---------- sound ----------
 const audio = createAudio();
@@ -1447,10 +1446,11 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
-  setI(pr, 'uCloudMap', 6); setU(pr, 'uCloudO', weather.origin); setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0); setU(pr, 'uCloudSim', settings.fx.cloudSim ? 1 : 0); setU(pr, 'uOvercast', env.overcast);
-  setI(pr, 'uCloud2D', 12); setU(pr, 'uCloudWind', cloudWind); setU(pr, 'uCloudMean', cloudMean);
-  setI(pr, 'uCloudMapP', 10); setU(pr, 'uCloudOP', weather.originPrev); setU(pr, 'uCloudF', weather.blend);
-  setI(pr, 'uCloudBase', 13); setI(pr, 'uCloudDetail', 14); setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11);
+  // the clouds: the global atmosphere's cloud volume over the whole planet, or the local sim's window
+  setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
+  setI(pr, 'uCV0', 6); setI(pr, 'uCV1', 8); setI(pr, 'uCV2', 10);
+  if (weather.atmos) { setU(pr, 'uCVO', [0, 0]); setU(pr, 'uCVN', [512, 256]); setU(pr, 'uCVWrap', 1); }
+  else { setU(pr, 'uCVO', weather.cloudVolO); setU(pr, 'uCVN', [CLOUD_N, CLOUD_N]); setU(pr, 'uCVWrap', 0); }
   setU(pr, 'uRain', env.rain);
 }
 function invert(m) {
@@ -1536,14 +1536,11 @@ function render(time, dt) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, weather.map);
+  const cv = weather.atmos ? weather.atmos.cloudTex : weather.cloudVol;
+  gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, cv[0]);
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_3D, weather.noise);
-  gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, weather.map2);
-  gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, weather.mapPrev);
-  gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D, weather.map2Prev);
-  gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, weather.tex2);
-  gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_3D, weather.cloudBase);
-  gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_3D, weather.cloudDetail);
+  gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, cv[1]);
+  gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, cv[2]);
   gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, weather.snowMap);
   post.beginScene();
   gl.clear(gl.DEPTH_BUFFER_BIT | gl.COLOR_BUFFER_BIT);
@@ -1562,7 +1559,7 @@ function render(time, dt) {
     setU(pr, 'uStarP', env.starP); setU(pr, 'uStarM', env.starM); setU(pr, 'uStarE', env.starE);
     setU(pr, 'uMoonDir', env.moonDir); setU(pr, 'uSunTrue', env.sunUp ? 1 : 0);
     setU(pr, 'uPixAng', 2 * Math.tan(fov / 2) / H); setU(pr, 'uCloudQ', settings.fx.cloudQ ?? 2);
-    setI(pr, 'uNoise3', 7); setI(pr, 'uCloudMap2', 8); setI(pr, 'uCloudMap2P', 11);
+    setI(pr, 'uNoise3', 7);
     const f = env.flash;
     setU(pr, 'uFlash', f && f.I > 0.01 ? [f.x, 0, f.z, f.I] : [0, 0, 0, 0]);
     setU(pr, 'uBow', env.bow);
@@ -1874,7 +1871,7 @@ seasonVis = settings.season;
 
 const FX_LABELS = [['bloom', 'Bloom'], ['rays', 'God rays'], ['ssao', 'Ambient occlusion'], ['dof', 'Depth of field'],
   ['motion', 'Motion blur'], ['flare', 'Lens flare'], ['ssr', 'Water reflections'], ['caustics', 'Caustics'], ['ocean', 'Ocean ripples (FFT)'],
-  ['mist', 'Valley mist'], ['clouds', 'Clouds'], ['cloudSim', 'Weather-driven clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
+  ['mist', 'Valley mist'], ['clouds', 'Clouds'], ['ca', 'Chromatic aberration'], ['fxaa', 'FXAA']];
 const fxGrid = $('fx-grid');
 for (const [k, label] of FX_LABELS) {
   const l = document.createElement('label');
@@ -2091,8 +2088,6 @@ function frameBody(now) {
   if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }
   weather.update(dt, state.pos[0], state.pos[2]);
   // the sky clouds drift with the mean wind, like the cloud map they are shaped by
-  cloudWind[0] -= weather.mean[0] * CLOUD_ADV * 16 * dt; cloudWind[1] -= weather.mean[1] * CLOUD_ADV * 16 * dt;
-  if (weather.ready) cloudMean += (weather.meanCover * weather.meanCover - cloudMean) * Math.min(1, dt / 4);
   // the local wind (prevailing flow plus passing storms, scaled by the wind slider) drives the
   // foliage sway, the falling leaves and the sea state; smoothed over a few seconds
   {
@@ -2258,6 +2253,6 @@ function restoreAt(data) {
     }
   }, 100);
 }
-window.__emberwood = { get wxForce() { return wxForce; }, set wxForce(v) { wxForce = v; }, audio, heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, boat, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
+window.__emberwood = { get wxForce() { return wxForce; }, set wxForce(v) { wxForce = v; }, get atmos() { return atmos; }, audio, heightCPU, setSeason: i => { setSeason(i); seasonVis = settings.season; }, get planet() { return planet; }, state, chunks, settings, setPlaying, stats, setBlock, getBlock, simQ, jobs: () => inflight(), results, get remeshCount() { return remeshCount; }, simFlips, get emitCount() { return emitCount; }, get foamCount() { return foamCount; }, weather, env, progs, ocean, boat, get boltPath() { return boltPath; }, spotCode, parseSpot, goToSpot };
 if (hot && hot.ready) hot.ready(start); else start(hot && hot.data ? hot.data : {});
 })();
