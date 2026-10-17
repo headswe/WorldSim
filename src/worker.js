@@ -8,7 +8,8 @@ const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WATER = 5,
   OAK_LOG = 6, BIRCH_LOG = 7, SPRUCE_LOG = 8,
   LEAF_RED = 9, LEAF_ORANGE = 10, LEAF_YELLOW = 11, LEAF_BROWN = 12, LEAF_GREEN = 13,
   LITTER = 14, MOSSY = 15, PLANKS = 16, FLOW1 = 17, FALL = 24, SNOW = 25, ICE = 26,
-  REED = 27, TUFT = 28, TWIG = 29; // cross-quad plants: reeds and cattails (two blocks tall), grass tufts
+  REED = 27, TUFT = 28, TWIG = 29, // cross-quad plants: reeds and cattails (two blocks tall), grass tufts
+  SALT = 30; // white salt crust on the floor of a dried-up lake
 const isPlant = b => b === REED || b === TUFT;
 // water: WATER is a source, FLOW1..FLOW7 (17..23) are flowing levels 1..7, FALL is a falling column
 const isWater = b => b === WATER || (b >= FLOW1 && b <= FALL);
@@ -902,7 +903,7 @@ function genPadded(cx, cz) {
       if (h < wt && wt > WL) top = hash(wx, wz, 5) < 0.3 ? MOSSY : DIRT; // river bed
       else if (h < wt) top = h < wt - 2 && hash(wx, wz, 5) < 0.5 ? DIRT : SAND;
       else if (h <= WL + 1 && nearSea(wx, wz)) top = coldS < -2 ? SNOW : bio === BIOME.TUNDRA && hash(wx, wz, 5) < 0.5 ? DIRT : SAND;
-      else if (salt && drop <= 1) { top = SAND; soil = 4; } // salt pan
+      else if (salt && drop === 0 && h <= planetY(wx, wz) + 1.5) { top = SALT; soil = 4; } // salt pan, on the flat floor only
       else if (h <= WL + 1 && coldS >= -2) top = hash(wx, wz, 5) < 0.35 ? MOSSY : GRASS; // low wet ground: marsh
       else if (cold < -8 && drop <= 1 && !(rv && rv.d < 3)) { top = ICE; soil = 2; } // glacier ice in the high cold troughs
       else if (coldS < -2) { top = SNOW; if (drop >= 3) soil = 0; } // snow lies on every ledge above the snow line

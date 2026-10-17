@@ -3,7 +3,7 @@
 const BUILD = '/*BUILD*/';
 const CS = 32, CH = 124, P = CS + 2, WL = 30;
 const B = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, SAND: 4, WATER: 5, OAK_LOG: 6, BIRCH_LOG: 7, SPRUCE_LOG: 8,
-  LEAF_RED: 9, LEAF_ORANGE: 10, LEAF_YELLOW: 11, LEAF_BROWN: 12, LEAF_GREEN: 13, LITTER: 14, MOSSY: 15, PLANKS: 16, REED: 27, TUFT: 28, TWIG: 29 };
+  LEAF_RED: 9, LEAF_ORANGE: 10, LEAF_YELLOW: 11, LEAF_BROWN: 12, LEAF_GREEN: 13, LITTER: 14, MOSSY: 15, PLANKS: 16, REED: 27, TUFT: 28, TWIG: 29, SALT: 30 };
 const isPlant = b => b === B.REED || b === B.TUFT;
 const FLOW1 = 17, FALL = 24;
 const isW = b => b === B.WATER || (b >= FLOW1 && b <= FALL);
