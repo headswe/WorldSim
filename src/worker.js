@@ -52,7 +52,7 @@ function setSeed(s) {
   for (let k = 0; k < PN; k++) {
     cellY[k] = elevToY(PL.elev[k]);
     lakeY[k] = PL.lake[k] > 0 ? Math.floor(elevToY(PL.lake[k])) : 0;
-    saltF[k] = PL.salt[k];
+    saltF[k] = PL.salt[k]; basinF[k] = PL.basin[k];
   }
   // how well watered each cell is: land rain ranked 0..1, plus a halo around rivers and lakes
   {
@@ -92,7 +92,7 @@ const hash3 = (x, y, z) => hash(x + Math.imul(y, 7919), z, 99);
 // The planet simulation gives the large-scale height (one value per 16x16 cell, smoothly
 // interpolated); local noise adds hills, rough mountain ridges and terraced cliff bands.
 let PL = null, planetProgress = () => {};
-const cellY = new Float32Array(PN), lakeY = new Float32Array(PN), rainN = new Float32Array(PN), wetF = new Float32Array(PN), saltF = new Float32Array(PN);
+const cellY = new Float32Array(PN), lakeY = new Float32Array(PN), rainN = new Float32Array(PN), wetF = new Float32Array(PN), saltF = new Float32Array(PN), basinF = new Float32Array(PN);
 // land rises quickly off the coast (so lowland rivers still sit in valleys) and then more slowly
 // toward the peaks
 const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -119,9 +119,9 @@ function rawHeight(x, z) {
   const land = Math.min(1, Math.max(0, (Y - WL) / 5));
   const mount = Math.min(1, Math.max(0, (Y - 42) / 18));
   const b = nB(x / 95, z / 95), c = nC(x / 28, z / 28);
-  // plains keep only a gentle swell of the local hills
-  const pl = fieldAt(PL.plain, x, z);
-  let h = Y + (b * 4.5 + c * 1.5) * (0.25 + 0.75 * land) * (1 - 0.75 * pl);
+  // plains keep only a gentle swell of the local hills, and the floor of a dried-up lake is flat
+  const pl = Math.max(fieldAt(PL.plain, x, z), fieldAt(basinF, x, z) * 1.25);
+  let h = Y + (b * 4.5 + c * 1.5) * (0.25 + 0.75 * land) * Math.max(0.05, 1 - 0.75 * pl);
   if (mount > 0) {
     // ridged multifractal on the plate ranges: knife-edge crests, steep faces, and each octave
     // only adds detail where the one above it is already high (peaks get rougher than valleys)
@@ -179,7 +179,7 @@ function baseHeight(x, z) {
   let shore = (h0 - WL - 1) / 6; shore = shore < 0 ? 0 : shore > 1 ? 1 : shore;
   // glaciated ground was planed smooth by ice, so rain gullies fade out under it
   const k0 = cellAt(x, z), frost = Math.min(1, Math.max(fieldAt(PL.ice, x, z), -(PL.temp[k0] - (h0 - cellY[k0]) * 0.25) / 6));
-  const steep0 = Math.min(1, Math.hypot(sx, sz) * 2.5) * shore * shore * (3 - 2 * shore) * (1 - Math.max(0, frost)) * (1 - fieldAt(PL.plain, x, z));
+  const steep0 = Math.min(1, Math.hypot(sx, sz) * 2.5) * shore * shore * (3 - 2 * shore) * (1 - Math.max(0, frost)) * Math.max(0, 1 - fieldAt(PL.plain, x, z) - fieldAt(basinF, x, z) * 1.5);
   let h = h0, amp = EROSION_AMP, freq = 1 / 44, ero = 0;
   if (steep0 > 0.01)
     for (let o = 0; o < 3; o++) {
