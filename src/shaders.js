@@ -12,8 +12,12 @@ float h1(uint x){ return float(ih(x))*(1.0/4294967295.0); }
 // ~16): only there do the long storm swells run, 30..90 blocks long and up to a few blocks high,
 // growing with the wind like a real sea (longer waves need a stronger, longer-blowing wind).
 // seaAmp is the summed amplitude, so the shader can tell how high a point sits on the waves.
-uniform vec3 uSeaWind;
-float seaJ, seaAmp;
+// Swell (uSwell: travel direction xy, height z in blocks) comes from storms far out at sea, not
+// the local wind: two long trains along its direction. Toward the beach it shoals, growing taller
+// as the water shallows, until it is about as high as the water is deep and breaks; seaBreak says
+// how much a point is in a breaking crest (for the white water).
+uniform vec3 uSeaWind; uniform vec3 uSwell;
+float seaJ, seaAmp, seaBreak;
 vec3 seaWave(vec2 p, float t, float s, float deep, float fp, out vec3 nrm){
   float Lw[8]=float[8](21.0,8.5,16.0,11.0,19.0,7.0,13.5,9.5);
   vec3 off=vec3(0.0); vec3 n=vec3(0.0,1.0,0.0);
@@ -40,6 +44,14 @@ vec3 seaWave(vec2 p, float t, float s, float deep, float fp, out vec3 nrm){
     B[i]=min(0.03*BL[i]*pow(al,1.5)*pow(uSeaWind.z,1.5),0.12/k)*grow*deep*(1.0-smoothstep(BL[i]*0.12,BL[i]*0.4,fp));
     S+=k*B[i];
   }
+  float SL[2]=float[2](118.0,152.0), SA[2]=float[2](0.0,0.14), C[2];
+  vec2 sd=normalize(uSwell.xy+vec2(1e-4,0.0));
+  float shoal=mix((1.0+0.7*(1.0-s))*smoothstep(0.0,0.3,s),1.0,deep);
+  for(int i=0;i<2;i++){
+    float k=6.2831/SL[i];
+    C[i]=min(uSwell.z*(i==0?0.32:0.22)*shoal,min(0.1/k,mix(1.35*s+0.05,9.0,deep)))*(1.0-smoothstep(SL[i]*0.12,SL[i]*0.4,fp));
+    S+=k*C[i];
+  }
   // sharper crests in stronger wind, but the summed steepness stays below 0.8 so the surface never
   // loops over itself (that drew long white ribbons in a gale)
   float Q=min(mix(0.5,0.85,clamp((uSeaWind.z-0.5)/1.5,0.0,1.0)),0.8/max(S,1e-3));
@@ -64,6 +76,21 @@ vec3 seaWave(vec2 p, float t, float s, float deep, float fp, out vec3 nrm){
     n.xz-=D*k*a*cf; n.y-=Q*k*a*sf;
     jxx-=qk*D.x*D.x; jzz-=qk*D.y*D.y; jxz-=qk*D.x*D.y;
     seaAmp+=a;
+  }
+  seaBreak=0.0;
+  for(int i=0;i<2;i++){
+    float an=SA[i]; vec2 D=vec2(sd.x*cos(an)-sd.y*sin(an),sd.x*sin(an)+sd.y*cos(an));
+    float a=C[i];
+    float k=6.2831/SL[i], c=sqrt(9.8/k)*0.55, f=k*dot(D,p)-k*c*t+float(i)*2.3;
+    float cf=cos(f), sf=sin(f), qk=Q*a*k*sf;
+    off.xz+=Q*a*D*cf; off.y+=a*sf;
+    n.xz-=D*k*a*cf; n.y-=Q*k*a*sf;
+    jxx-=qk*D.x*D.x; jzz-=qk*D.y*D.y; jxz-=qk*D.x*D.y;
+    seaAmp+=a;
+    // a crest about as high as the water is deep (s: 0..3 blocks, deep: 4..16) breaks, spilling
+    // white water down its face
+    float brk=2.0*a/max(0.3,3.0*s+12.0*deep);
+    seaBreak=max(seaBreak,smoothstep(0.55,0.95,sf)*smoothstep(0.6,0.85,brk)*smoothstep(0.05,0.2,a));
   }
   seaJ=jxx*jzz-jxz*jxz;
   nrm=normalize(n);
@@ -308,7 +335,7 @@ vec3 applyFog(vec3 c, vec3 wp){
 const VS_TERRAIN = `#version 300 es
 ${GLSL_COMMON}
 layout(location=0) in uint aData;
-uniform mat4 uVP; uniform mat4 uLightVP; uniform vec3 uOrigin; uniform float uWind;
+uniform mat4 uVP; uniform mat4 uLightVP; uniform vec3 uOrigin; uniform float uWind; uniform float uFlood;
 out vec3 vWorld; out vec3 vPos; out vec4 vLP; out float vAO; out float vSeaD; flat out uint vBlock; flat out int vN;
 const vec3 NRM[6]=vec3[6](vec3(1,0,0),vec3(-1,0,0),vec3(0,1,0),vec3(0,-1,0),vec3(0,0,1),vec3(0,0,-1));
 vec3 windOff(vec3 p){
@@ -327,6 +354,8 @@ void main(){
     float lv=float((b-64u)/9u);
     bool topV = n==2 || (n!=3 && ((d>>22u)&3u)==1u);
     if(topV) wv.y-=0.12+(8.0-lv)/8.0*0.85;
+    // rivers and lakes run high after rain and low in a dry spell (uFlood -1..1); the sea stays put
+    if(topV && !(lv>7.5 && abs(w.y-31.0)<0.01)) wv.y+=uFlood*(uFlood>0.0?0.1:0.35);
     if(n==2 && lv>7.5 && abs(w.y-31.0)<0.01){
       vec3 nn; float s=float((d>>22u)&3u)/3.0;
       wv+=seaWave(w.xz,uTime,s,vSeaD,0.0,nn);
@@ -532,6 +561,7 @@ ${FS_LIGHTING}
 uniform highp sampler3D uNoise3;
 in vec3 vWorld; in vec3 vPos; in vec4 vLP; in float vAO; in float vSeaD; flat in uint vBlock; flat in int vN;
 uniform sampler2D uSceneColor; uniform sampler2D uSceneDepth; uniform vec2 uRes; uniform vec2 uNearFar; uniform mat4 uVP; uniform float uSSR;
+uniform float uFlood;
 // the boat: its wake as a trail of stern positions (x, z, age s, speed m/s), newest first, and
 // where it is now (x, z, heading x, z) with its speed, for the white water around the hull
 uniform vec4 uWake[16]; uniform int uWakeN; uniform vec4 uBoat; uniform float uBoatS;
@@ -610,7 +640,8 @@ void main(){
     o=vec4(outHDR(col),1.0);
     return;
   }
-  vec2 q=wp.xz-flow*uTime*1.8;
+  float flood=max(uFlood,0.0);
+  vec2 q=wp.xz-flow*uTime*1.8*(1.0+0.9*flood);
   float e=0.06, h0=waveH(q), amp=0.6+fl*0.9;
   vec3 N=normalize(vec3(-(waveH(q+vec2(e,0))-h0)/e*amp, 1.0, -(waveH(q+vec2(0,e))-h0)/e*amp));
   // the open sea rolls with long swells from two directions
@@ -676,6 +707,11 @@ void main(){
   vec3 refr=texture(uSceneColor,ruv).rgb/uEnc;
   vec3 tint=vec3(0.03,0.085,0.085)*(uAmbSky*1.4+uSunCol*0.35*sh);
   vec3 absorb=exp(-thick*vec3(1.1,0.45,0.36));
+  // high water after rain is brown with the silt it carries, and you can't see the bed
+  if(!sea && flood>0.0){
+    tint=mix(tint,vec3(0.15,0.105,0.06)*(uAmbSky*1.4+uSunCol*0.45*sh),flood);
+    absorb*=exp(-thick*flood*2.5);
+  }
   vec3 under=mix(tint,refr,absorb);
   // screen-space reflections, sky as fallback
   vec3 R=reflect(V,N);
@@ -738,6 +774,7 @@ void main(){
     // separate bubbles instead of fading as a flat grey sheet. Beneath it the water is milky.
     float f=max(band*0.75,max(cap,shore));
     f=max(f,boatFoam(vWorld.xz));
+    f=max(f,seaBreak*0.8);
     vec2 fq=vWorld.xz+cw*uTime*0.6;
     vec2 b1=texture(uNoise3,vec3(fq*0.11,uTime*0.015)).rg;
     float b2=texture(uNoise3,vec3(fq*0.29+0.37,uTime*0.03+0.5)).g;
@@ -752,7 +789,7 @@ void main(){
     // white water streaks stretched along the current, stronger where the level drops
     vec2 pr=vec2(-flow.y,flow.x);
     float sn=vnoise(vec2(dot(wp.xz,flow)*0.9-uTime*2.6,dot(wp.xz,pr)*3.2))*0.7+vnoise(vec2(dot(wp.xz,flow)*2.1-uTime*3.4,dot(wp.xz,pr)*7.0))*0.3;
-    foam=max(foam,smoothstep(0.66,0.9,sn)*(0.2+(8.0-lv)/8.0*0.6));
+    foam=max(foam,smoothstep(0.66-0.12*flood,0.9,sn)*(0.2+(8.0-lv)/8.0*0.6)*(1.0+0.6*flood));
   }
   col=mix(col,vec3(0.95,0.94,0.9)*(uAmbSky*1.5+uSunCol*0.75*sh+0.08),foam*0.92);
   col=applyFog(col,wp);

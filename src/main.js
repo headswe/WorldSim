@@ -248,6 +248,7 @@ function listenAround() {
   hear.trees = Math.min(1, emitCount / 600 + leaf * 0.4);
 }
 // a few words on the weather for the corner readout
+const baro = { t: 0, hist: [] };
 function weatherWords() {
   if (!weather.ready) return '';
   const [x, , z] = state.pos, ty = weather.typeAt(x, z);
@@ -262,7 +263,11 @@ function weatherWords() {
   if (env.fog2[0] > 0.008 || env.hill > 0.4) sky += ', fog';
   if (env.bow > 0.3) sky += ', rainbow';
   const wind = ms < 2 ? 'calm' : ms < 6 ? `light wind ${ms} m/s` : ms < 12 ? `breezy ${ms} m/s` : ms < 18 ? `strong wind ${ms} m/s` : `gale ${ms} m/s`;
-  return `${T} °C · ${sky} · ${wind}`;
+  // the barometer: pressure and which way it has gone over the last game hour or so
+  const hpa = weather.pressureAt(x, z), now = performance.now();
+  if (!baro.t || now - baro.t > 2500) { baro.hist.push(hpa); if (baro.hist.length > 24) baro.hist.shift(); baro.t = now; }
+  const dp = hpa - baro.hist[0], tr = baro.hist.length < 6 ? '' : dp < -1.2 ? ' falling' : dp > 1.2 ? ' rising' : ' steady';
+  return `${T} °C · ${sky} · ${wind} · ${Math.round(hpa)} hPa${tr}`;
 }
 gl.bindVertexArray(null);
 
@@ -631,6 +636,11 @@ function drawMap() {
         for (let t = 0; t <= 1; t += 0.05) { const a = arm * 2.094 + dir * t * 4.2, rr = r * (0.15 + t); g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
         g.stroke();
       }
+    }
+    // thunderstorm cells near the player, brighter while they rain hardest
+    for (const c of weather.cells()) {
+      g.fillStyle = `rgba(255,236,160,${0.25 + 0.6 * c.I})`;
+      g.beginPath(); g.arc(c.x / 16 * S, c.z / 16 * S, Math.max(1.5, c.r / 16 * S * (0.6 + 0.6 * c.I)), 0, 6.283); g.fill();
     }
   }
   if (on.trail && trail.length > 1) {
@@ -1211,8 +1221,8 @@ function placeBlock() {
 // ---------- sun & sky ----------
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const env = { foliage: 1, seaWind: [0.8, 0.6, 1], rain: 0, flash: null, flashI: 0,
-  precip: 0, overcast: 0, snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
-let outflowT = 0, outflow = [0, 0, 0], snowAt = null;
+  precip: 0, overcast: 0, flood: 0, swell: [1, 0, 0], snowFrac: 0, snowFall: 0, wet: 0, fog2: [0, 31, 0.07, 0], hill: 0, bow: 0, temp: 10, gust: 1, windSpeed: 1 };
+let outflowT = 0, outflow = [0, 0, 0], snowAt = null, swellT = 0, swellTgt = [1, 0, 0];
 const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (((Math.floor(x) % HM) + HM) % HM)];
 // What the weather is doing where the player stands, and what it leaves on the ground.
 // Precipitation falls as rain or snow by the air temperature at the player (sleet in between).
@@ -1223,7 +1233,7 @@ const groundAt = (x, z) => heightCPU[(((Math.floor(z) % HM) + HM) % HM) * HM + (
 function updateWeatherEnv(dt) {
   const [x, y, z] = state.pos, on = weather.ready && cloudsOn();
   const gy = Math.max(groundAt(x, z) || 0, 31);
-  const T = weather.ready ? weather.tempAt(x, z, gy) - outflow[2] : 10;
+  const T = weather.ready ? weather.tempAt(x, z, gy) : 10;
   env.temp = T;
   const r = on ? Math.min(1, Math.max(0, weather.rainAt(x, z) - 0.08) / 0.6) * (1 - smooth(290, 320, y)) : 0;
   env.precip += (r - env.precip) * Math.min(1, dt / 3);
@@ -1270,6 +1280,10 @@ function updateWeatherEnv(dt) {
     bow = smooth(0.2, 0.55, ahead) * (1 - smooth(0.55, 0.85, sunSide)) * smooth(42, 32, env.sunEl) * smooth(0, 3, env.sunEl) * (1 - env.snowFrac);
   }
   env.bow += (bow - env.bow) * Math.min(1, dt / 3);
+  // rivers and lakes: high and muddy for a while after the catchment has been soaked, low after a
+  // dry spell; they follow the soil with a lag, as the water takes time to drain down to them
+  const fl = on ? Math.max(-1, Math.min(1, weather.soilWet * 3.2)) : 0;
+  env.flood += (fl - env.flood) * Math.min(1, dt / (fl > env.flood ? 45 : 120));
   // tests can pin any of these (window.__emberwood.wxForce = { wet: 1 })
   if (wxForce) Object.assign(env, wxForce);
 }
@@ -1383,7 +1397,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uFogDen', 1.25 / (settings.rd * CS) * (1 + 0.7 * env.precip + 0.6 * env.snowFall + 5 * env.hill) * Math.sqrt(settings.envFog));
   setU(pr, 'uWet', env.wet); setI(pr, 'uSnowMap', 15); setU(pr, 'uSnowO', weather.snowOrigin); setU(pr, 'uFog2', env.fog2); setU(pr, 'uRainVeil', weather.ready && weather.maxRain > 0.25 ? 1 : 0);
   setU(pr, 'uAmbSky', env.ambSky); setU(pr, 'uAmbGround', env.ambGround);
-  setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind);
+  setU(pr, 'uWind', env.foliage); setU(pr, 'uSeaWind', env.seaWind); setU(pr, 'uSwell', env.swell); setU(pr, 'uFlood', env.flood);
   setU(pr, 'uEnc', post.enc);
   setU(pr, 'uMist', settings.fx.mist ? settings.envFog : 0);
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
@@ -2022,7 +2036,7 @@ function frameBody(now) {
   updateChunks();
   simStep(dt);
   if (planet && !weather.ready && state.spawned) weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
-  weather.windMul = settings.wind; weather.tod = settings.tod;
+  weather.windMul = settings.wind; weather.tod = settings.tod; weather.dayLen = (settings.daylen || 20) * 60;
   weather.humid = settings.envHumid; weather.cloudy = settings.envClouds; weather.stormMul = settings.envStorms; weather.rainMul = settings.envRain;
   if (weather.temp !== settings.envTemp) { weather.temp = settings.envTemp; weather.envChanged(); }
   weather.update(dt, state.pos[0], state.pos[2]);
@@ -2033,10 +2047,11 @@ function frameBody(now) {
   // foliage sway, the falling leaves and the sea state; smoothed over a few seconds
   {
     const w = weather.ready ? weather.windAt(state.pos[0] / 16, state.pos[2] / 16) : [0.7, 0.2];
-    // a thunderstorm's gust front: rain-cooled air pouring out ahead of the storm
+    // a thunderstorm's gust front (rain-cooled air pouring out ahead of the storm) is part of the
+    // simulated wind; its strength here makes the wind gustier
     if (weather.ready && now - outflowT > 250) { outflowT = now; outflow = weather.outflowAt(state.pos[0], state.pos[2]); }
     const k = Math.min(1, dt / 1.5);
-    localWind[0] += ((w[0] + outflow[0]) * settings.wind - localWind[0]) * k; localWind[1] += ((w[1] + outflow[1]) * settings.wind - localWind[1]) * k;
+    localWind[0] += (w[0] * settings.wind - localWind[0]) * k; localWind[1] += (w[1] * settings.wind - localWind[1]) * k;
     const sp0 = Math.hypot(localWind[0], localWind[1]);
     // gusts: the wind comes in bursts, more so when it is strong and in stormy air
     const t = now / 1000, g = 0.5 * Math.sin(t * 0.37) + 0.3 * Math.sin(t * 1.13 + 1.7) + 0.2 * Math.sin(t * 2.71 + 4.1);
@@ -2046,6 +2061,12 @@ function frameBody(now) {
     env.windSpeed = sp;
     env.foliage = Math.min(3, sp * 1.1);
     env.seaWind = [localWind[0] / (sp0 || 1), localWind[1] / (sp0 || 1), Math.min(2.2, 0.15 + sp0 * 0.95)];
+    // swell from storms out at sea: it builds and dies away slowly, as the waves take hours to
+    // arrive; the boat reads it from the wind array so it rides the same waves the sea draws
+    if (weather.ready && now - swellT > 500) { swellT = now; swellTgt = weather.swellAt(state.pos[0], state.pos[2]); }
+    const ks = Math.min(1, dt / 40);
+    env.swell = [env.swell[0] + (swellTgt[0] - env.swell[0]) * ks, env.swell[1] + (swellTgt[1] - env.swell[1]) * ks, env.swell[2] + (swellTgt[2] - env.swell[2]) * ks];
+    env.seaWind.swell = env.swell;
   }
   updateWeatherEnv(dt);
   // rain overhead greys and dims the light and thickens the haze; lightning lights everything up
