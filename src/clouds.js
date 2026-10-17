@@ -41,7 +41,7 @@ function createWeather(gl) {
   const px = new Uint8Array(NN * 4), px2 = new Uint8Array(NN * 2), px3 = new Uint8Array(NN * 4);
   // lightning: candidate thunderstorm cells and the strike currently flashing
   let cbCells = [], cbW = 0, clock = 0, strike = null;
-  let ox = 0, oz = 0, pl = null, storms = [], acc = 0, simT = 0, seasonOff = 0, ready = false;
+  let ox = 0, oz = 0, pl = null, storms = [], lowsSeen = null, acc = 0, simT = 0, seasonOff = 0, ready = false;
   const mean = [0, 0];
   const smooth01 = x => { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); };
 
@@ -371,6 +371,23 @@ function createWeather(gl) {
   // lift = slope the wind climbs + storm cores and fronts + warm-land convection + converging air
   // + warm air advancing over cold + latent heat
   const pw = [0, 0];
+  // The global atmosphere's view of planet cell (gi, gj), in this sim's units. Its wind is at cloud
+  // level in planet cells per second; rising air, thick and high cloud and convection are turned
+  // into the lift, cloud shield, cirrus and thunderstorm shares the local sim works with.
+  const AT = { u: 0, v: 0, up: 0, cs: 0, sh: 0, fc: 0, ft: 0, st: 0, tf: 0 };
+  function atmosAt(A, gi, gj) {
+    const s = (f, c) => A.sampleWin(f, c, gi, gj);
+    const G = api.atmosGain;
+    AT.u = s(0, 0) / CLOUD_ADV * G.wind; AT.v = s(0, 1) / CLOUD_ADV * G.wind;
+    const w = s(0, 2), col = s(1, 1), hi = s(1, 2), cv = s(1, 3), rain = s(2, 0);
+    AT.up = Math.max(-0.6, Math.min(1.4, w * G.lift + rain * G.rainLift));
+    AT.cs = Math.min(0.9, hi * G.cirrus);
+    AT.sh = Math.min(1, smooth01((col - G.shield0) / G.shield1)) * Math.min(1, 0.4 + rain * G.rainShield);
+    AT.fc = Math.min(1, cv * G.conv); AT.ft = AT.fc * 0.8;
+    AT.st = w > 0 ? Math.min(1, w * G.lift * 1.4) * (1 - AT.fc) : 0;
+    AT.tf = Math.max(-8, Math.min(7, s(0, 3) * G.air));
+    return AT;
+  }
   function winds(dt) {
     const near = storms.filter(s => {
       let dx = s.x - (ox + N / 2); dx -= Math.round(dx / PWc) * PWc;
@@ -397,12 +414,20 @@ function createWeather(gl) {
       pu[n] = rc * wx - rs * wz; pv[n] = rc * wz + rs * wx;
     }
     let mu = 0, mv = 0;
+    // With the global atmosphere running, the large-scale weather comes from it: its wind, where
+    // its air rises, its cloud decks, its thunderstorms and its air masses. The scripted belts,
+    // storm vortices and fronts below are the fallback when there is no GPU sim.
+    const A = api.atmos && api.atmos.win.ready ? api.atmos : null;
     for (let j = 0; j < N; j++) {
-      prevailing(oz + j, pw);
+      if (!A) prevailing(oz + j, pw);
       for (let i = 0; i < N; i++) {
         const n = j * N + i, gi = ox + i + 0.5, gj = oz + j + 0.5;
         let wu = pw[0], wv = pw[1], up = 0, cs = 0, sh = 0, fl = 0, fc = 0, ft = 0, st = 0, tf = 0;
-        for (const s of near) {
+        if (A) {
+          const g = atmosAt(A, gi, gj);
+          wu = g.u; wv = g.v; up = g.up; cs = g.cs; sh = g.sh; fc = g.fc; ft = g.ft; st = g.st; tf = g.tf;
+        }
+        for (const s of (A ? [] : near)) {
           let dx = gi - s.x; dx -= Math.round(dx / PWc) * PWc;
           const dz = gj - s.z, rr = (dx * dx + dz * dz) / (s.r * s.r);
           if (rr > 16) continue;
@@ -521,7 +546,13 @@ function createWeather(gl) {
     // storms drift west and poleward with the trades and swing east once they reach the westerlies.
     // Each one deepens or fills toward what it can feed on, and is replaced when it has filled.
     const ST = stormT();
-    for (let i = 0; i < storms.length; i++) {
+    // with the global atmosphere the storms are the lows it grew, refreshed as its map comes in
+    const A = api.atmos && api.atmos.glob.ready ? api.atmos : null;
+    if (A && A.lows !== lowsSeen) {
+      lowsSeen = A.lows;
+      storms = A.lows.map(l => ({ x: l.x, z: l.z, r: l.r, s: 1, k: Math.min(1.5, l.depth / (l.tropical ? 14 : 18)), fronts: !l.tropical, age: 0.5, life: 1, gl: l }));
+    } else if (!A && lowsSeen) { lowsSeen = null; seedStorms(pl ? (pl.seed || 1) : 1); }
+    if (!A) for (let i = 0; i < storms.length; i++) {
       const s = storms[i], hem = s.z < PHc / 2 ? 1 : -1;
       prevailing(Math.floor(s.z), pw);
       s.x = (s.x + pw[0] * dt * CLOUD_ADV * 0.55 + PWc) % PWc;
@@ -780,6 +811,9 @@ void main(){
     temp: 0, humid: 1, cloudy: 1, stormMul: 1, rainMul: 1,
     // seconds per game day (set from the day-length setting): storms live one to two days
     dayLen: 1200,
+    // the global GPU atmosphere when it runs (set by the game), and how its fields map onto this sim
+    atmos: null,
+    atmosGain: { wind: 0.9, lift: 10, rainLift: 4, cirrus: 2.2, shield0: 0.08, shield1: 0.35, rainShield: 6, conv: 3, air: 0.8 },
     envChanged() { if (pl) staticFields(); },
     noise, mean, tex2, cloudBase: cloudNoise.base, cloudDetail: cloudNoise.detail,
     get meanCover() { return meanCover; }, get maxRain() { return maxRain; },
@@ -858,6 +892,8 @@ void main(){
       // inside the simulated grid: the full wind, pressure winds and the ground's steering included
       const fi = gi - ox - 0.5, fj = gj - oz - 0.5, wm = api.windMul || 1;
       if (ready && fi >= 1 && fj >= 1 && fi < N - 2 && fj < N - 2) return [samp(u, fi, fj, 0) / wm, samp(v, fi, fj, 0) / wm];
+      const A = api.atmos && api.atmos.glob.ready ? api.atmos : null;
+      if (A) return [A.sampleGlob(0, 0, gi, gj) / CLOUD_ADV, A.sampleGlob(0, 1, gi, gj) / CLOUD_ADV];
       const w = [0, 0]; prevailing(gj, w);
       for (const s of storms) {
         let dx = gi - s.x; dx -= Math.round(dx / PWc) * PWc;
@@ -874,6 +910,8 @@ void main(){
     // subtropical highs, subpolar lows, polar highs), the storms' lows and the local warm/cold air
     pressureAt(x, z) {
       const gi = x / PC, gj = z / PC, a = Math.abs(latDeg(gj - 0.5));
+      const A = api.atmos && api.atmos.glob.ready ? api.atmos : null;
+      if (A) return 1013 + (A.win.ready ? A.sampleWin(2, 1, gi, gj) : A.sampleGlob(2, 1, gi, gj)) + samp(pr, gi - ox - 0.5, gj - oz - 0.5, 0);
       let p = 1013 - 5 * Math.exp(-((a / 10) ** 2)) + 8 * Math.exp(-(((a - 30) / 12) ** 2)) - 9 * Math.exp(-(((a - 60) / 10) ** 2)) + 5 * Math.exp(-(((a - 88) / 10) ** 2));
       for (const s of storms) {
         let dx = gi - s.x; dx -= Math.round(dx / PWc) * PWc;
