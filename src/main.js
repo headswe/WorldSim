@@ -373,7 +373,7 @@ function onPlanetMessage(d) {
 }
 const PLANET_W = 512 * 16, PLANET_H = 256 * 16;
 // ---- planet map and globe ----
-const BIOME_COL = [[38, 74, 120], [232, 238, 244], [150, 146, 118], [58, 96, 66], [196, 112, 44], [164, 160, 88], [214, 190, 132], [70, 140, 58]];
+const BIOME_COL = [[38, 74, 120], [232, 238, 244], [150, 146, 118], [58, 96, 66], [196, 112, 44], [164, 160, 88], [214, 190, 132], [70, 140, 58], [186, 168, 70], [128, 138, 84]];
 let mapPx = null;
 function buildPlanetMap() {
   const { ys, riv, lk, tmp, biome, PW, PH } = planet;
@@ -410,8 +410,20 @@ const MAP_MODES = [
   ['Temperature', 'Cold blue to hot red, falling with latitude and height'],
   ['Drainage', 'How much rain each cell gathers from upstream: the river network'],
   ['Rivers', 'Rivers by size, lakes and deltas over the biomes'],
+  ['Currents', 'Sea temperature against the average for its latitude: warm currents red, cold blue', ['linear-gradient(90deg,#2850d2,#ebebe6,#d23228)', '−6°C', '+6°C']],
+  ['Rain season', 'When the rain falls: green all year, orange mostly in summer, purple mostly in winter; white salt pans', ['linear-gradient(90deg,#8c50be,#3c9646,#e68c28)', 'winter rain', 'summer rain']],
+  ['Moisture', 'Rain against what the warmth could evaporate: parched brown, balanced yellow, wet green to blue', ['linear-gradient(90deg,#a05a28,#e6d278,#50aa50,#2850c8)', 'parched', 'wet']],
+  ['July', 'Temperature in July (northern summer, southern winter)', ['linear-gradient(90deg,#3c5ac8,#ebebdc,#d24628)', '−20°C', '+30°C']],
+  ['January', 'Temperature in January (northern winter, southern summer)', ['linear-gradient(90deg,#3c5ac8,#ebebdc,#d24628)', '−20°C', '+30°C']],
+  ['Sediment', 'Where eroded rock settled: fans at mountain fronts, river plains, filled lakes and deltas', ['linear-gradient(90deg,#1e2024,#a07838,#ffe6a0)', 'none', 'thick']],
 ];
+// keys for the views: 1-9, then 0, - and =
+const MAP_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '='];
+const MAP_CODES = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal'];
 let mapModes = [], mapMode = 0;
+// temperature in July (hs 1) or January (hs -1): the year's mean plus the swing, which runs the
+// other way south of the equator
+function seasonT(k, hs) { const j = Math.floor(k / planet.PW); return planet.L.temp[k] + planet.L.tAmp[k] * hs * (j < planet.PH / 2 ? 1 : -1); }
 function buildMapMode(m) {
   const { PW, PH, L, biome } = planet, PN = PW * PH, px = new Uint8ClampedArray(PN * 4);
   const lerp = (a, b, t) => { t = Math.max(0, Math.min(1, t)); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
@@ -438,6 +450,26 @@ function buildMapMode(m) {
     } else if (m === 4) {
       c = E[k] <= 0 ? [14, 22, 36] : lerp([28, 30, 34], [120, 220, 255], Math.pow(Math.log(1 + L.acc[k]) / Math.log(201), 0.8));
       if (L.lake[k]) c = [70, 120, 220];
+    } else if (m === 6) {
+      // the sea's warmth beside the plain latitude curve (planetTemp): the currents' doing
+      const s = Math.abs(Math.sin(Math.PI / 2 - (j + 0.5) / PH * Math.PI)), a = (L.sst[k] - Math.max(-1.8, 28 - 40 * Math.pow(s, 2.5))) / 6;
+      c = E[k] > 0 ? [70, 70, 70].map(v => v * shade(k)) : a > 0 ? lerp([235, 235, 230], [210, 50, 40], a) : lerp([235, 235, 230], [40, 80, 210], -a);
+    } else if (m === 7) {
+      const north = j < PH / 2, rs = north ? L.rJul[k] : L.rJan[k], rw = north ? L.rJan[k] : L.rJul[k], tot = rs + rw;
+      const t = Math.min(1, Math.sqrt(tot / 1.2)), d = tot > 1e-6 ? (rs - rw) / tot : 0;
+      c = lerp([200, 190, 160], d > 0 ? lerp([60, 150, 70], [230, 140, 40], d * 1.6) : lerp([60, 150, 70], [140, 80, 190], -d * 1.6), t);
+      c = E[k] <= 0 ? lerp(c, [20, 30, 50], 0.7) : L.salt[k] ? [250, 250, 245] : c.map(v => v * shade(k));
+    } else if (m === 8) {
+      const t = L.moist[k];
+      c = t < 0.35 ? lerp([160, 90, 40], [230, 210, 120], t / 0.35) : t < 0.6 ? lerp([230, 210, 120], [80, 170, 80], (t - 0.35) / 0.25) : lerp([80, 170, 80], [40, 80, 200], (t - 0.6) / 0.3);
+      c = E[k] <= 0 ? [20, 30, 50] : L.salt[k] ? [250, 250, 245] : c.map(v => v * shade(k));
+    } else if (m === 9 || m === 10) {
+      const t = (seasonT(k, m === 9 ? 1 : -1) + 20) / 50;
+      c = t < 0.5 ? lerp([60, 90, 200], [235, 235, 220], t * 2) : lerp([235, 235, 220], [210, 70, 40], (t - 0.5) * 2);
+      if (E[k] <= 0) c = lerp(c, [20, 30, 50], 0.55);
+    } else if (m === 11) {
+      const t = Math.min(1, Math.sqrt(L.dep[k] / 0.12));
+      c = E[k] <= 0 ? lerp([14, 22, 36], [90, 110, 120], t) : lerp([30, 32, 36], [160, 120, 56], Math.min(1, t * 2)).map((v, q) => t > 0.5 ? v + ([255, 230, 160][q] - v) * (t - 0.5) * 2 : v).map(v => v * shade(k));
     } else {
       c = E[k] <= 0 ? sea(k) : lerp(BIOME_COL[biome[k]], [255, 255, 255], 0.35).map(v => v * shade(k));
       if (L.lake[k]) c = [60, 120, 210];
@@ -451,7 +483,9 @@ function setMapMode(m) {
   mapMode = m;
   if (planet && planet.L && !mapModes[m]) mapModes[m] = buildMapMode(m);
   [...document.querySelectorAll('#mapmodes button')].forEach((b, i) => b.setAttribute('aria-pressed', String(i === m)));
+  const lg = MAP_MODES[m][2];
   $('mapdesc').textContent = MAP_MODES[m][1];
+  if (lg) $('mapdesc').insertAdjacentHTML('beforeend', ` <span class="maplg"><i>${lg[1]}</i><b style="background:${lg[0]}"></b><i>${lg[2]}</i></span>`);
   drawMap();
 }
 let globeT = 0, globeSpin = 0;
@@ -495,7 +529,7 @@ const OVERLAYS = [
   ['rivers', 'R', 'Rivers'], ['contours', 'H', 'Contours'], ['plates', 'P', 'Plates'], ['wind', 'W', 'Wind & storms'],
   ['clouds', 'C', 'Clouds'], ['grid', 'G', 'Grid'], ['trail', 'T', 'Your trail'],
 ];
-const BIOME_NAMES = ['Ocean', 'Ice', 'Tundra', 'Taiga', 'Autumn forest', 'Grassland', 'Desert', 'Warm forest'];
+const BIOME_NAMES = ['Ocean', 'Ice', 'Tundra', 'Taiga', 'Autumn forest', 'Grassland', 'Desert', 'Warm forest', 'Savanna', 'Scrubland'];
 settings.mapOverlays = Object.assign({ rivers: true, grid: true, trail: true, wind: false, clouds: false, contours: false, plates: false }, settings.mapOverlays || {});
 const overlayCache = {}, trail = [];
 let mapBase = null, mapBaseMode = -1;
@@ -633,8 +667,17 @@ function mapHover(e) {
   if (i < 0 || j < 0 || i >= planet.PW || j >= planet.PH) { $('mapinfo').textContent = ''; return; }
   const k = j * planet.PW + i, y = planet.ys[k], lat = 90 - (j + 0.5) / planet.PH * 180;
   const what = planet.lk[k] ? 'Lake' : y < 30 ? (planet.tmp[k] < -3 ? 'Sea ice' : 'Sea') : BIOME_NAMES[planet.biome[k]] + (planet.riv[k] > 8 ? ' · river' : planet.riv[k] ? ' · brook' : '');
-  const rain = planet.L ? ` · rain ${planet.L.rain[k].toFixed(2)}` : '';
-  $('mapinfo').textContent = `x ${i * 16 + 8}  z ${j * 16 + 8} · ${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'} · ${what} · height ${y} · ${planet.tmp[k]}°C${rain}`;
+  let more = '';
+  const L = planet.L;
+  if (L) {
+    if (y < 30 && !planet.lk[k]) more = ` · sea ${L.sst[k].toFixed(1)}°C`;
+    else {
+      const jul = seasonT(k, 1), jan = seasonT(k, -1), rs = L.rJul[k] + L.rJan[k];
+      more = ` · Jul ${jul.toFixed(0)}° Jan ${jan.toFixed(0)}° · rain ${L.rain[k].toFixed(2)} (${rs > 1e-6 ? Math.round(L.rJul[k] / rs * 100) : 50}% in Jul) · moisture ${Math.round(L.moist[k] * 100)}%`
+        + (L.salt[k] ? ' · salt pan' : '') + (L.dep[k] > 0.01 ? ` · sediment ${L.dep[k].toFixed(2)}` : '');
+    }
+  }
+  $('mapinfo').textContent = `x ${i * 16 + 8}  z ${j * 16 + 8} · ${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'} · ${what} · height ${y} · ${planet.tmp[k]}°C${more}`;
 }
 function toggleMap(on) {
   const mv = $('mapview'), was = mv.hidden;
@@ -680,7 +723,7 @@ function initMapModes() {
   $('map').addEventListener('pointerleave', () => { $('mapinfo').textContent = ''; });
   MAP_MODES.forEach(([name], i) => {
     const b = document.createElement('button');
-    b.type = 'button'; b.innerHTML = `<kbd>${i + 1}</kbd> ${name}`;
+    b.type = 'button'; b.innerHTML = `<kbd>${MAP_KEYS[i]}</kbd> ${name}`;
     b.addEventListener('click', () => setMapMode(i));
     bar.appendChild(b);
   });
@@ -708,7 +751,7 @@ function dispatch(msg, transfer) {
   let best = workers[0];
   for (const w of workers) if (w.jobs < best.jobs) best = w;
   best.jobs++;
-  msg.seed = settings.seed; msg.gen = worldGen; msg.bare = settings.season === 3;
+  msg.seed = settings.seed; msg.gen = worldGen; msg.bare = settings.season === 3; msg.season = settings.season;
   best.postMessage(msg, transfer || []);
 }
 
@@ -949,10 +992,11 @@ function regrowChunks() {
   emitDirty = true;
 }
 function setSeason(i, toast) {
-  const wasBare = settings.season === 3;
+  const was = settings.season;
   settings.season = ((i % 4) + 4) % 4;
   saveSettings(); syncSeason();
-  if (wasBare !== (settings.season === 3)) regrowChunks();
+  // (every season regrows: leaves, lying snow and frozen lakes all change with it)
+  if (was !== settings.season) regrowChunks();
   if (toast) showToast(SEASONS[settings.season]);
   weather.setSeason(settings.season);
 }
@@ -1883,7 +1927,7 @@ function look(dx, dy) {
 window.addEventListener('wheel', e => { if (playing) selectSlot(state.slot + (e.deltaY > 0 ? 1 : -1)); }, { passive: true });
 window.addEventListener('keydown', e => {
   if (!$('mapview').hidden && (e.code === 'Escape' || e.code === 'KeyM')) { toggleMap(false); e.preventDefault(); return; }
-  if (!$('mapview').hidden && /^Digit[1-6]$/.test(e.code)) { setMapMode(Number(e.code.slice(5)) - 1); e.preventDefault(); return; }
+  if (!$('mapview').hidden && MAP_CODES.indexOf(e.code) >= 0 && MAP_CODES.indexOf(e.code) < MAP_MODES.length) { setMapMode(MAP_CODES.indexOf(e.code)); e.preventDefault(); return; }
   if (!$('mapview').hidden) { const o = OVERLAYS.find(o => 'Key' + o[1] === e.code); if (o) { toggleOverlay(o[0]); e.preventDefault(); return; } }
   if (e.code === 'KeyM' && document.activeElement?.tagName !== 'INPUT') { toggleMap(true); return; }
   if (!playing) {
