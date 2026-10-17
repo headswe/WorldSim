@@ -367,8 +367,21 @@ void main(){
   o2=vec4(sf.y,hpa,a0.z+17.5,sf.z);
 }`;
 
+  // The cloud volume the game draws: cloud water (g/kg) of every column, layers 0-3 and 4-7, and the
+  // rain reaching the ground (g/kg per s), at the model's own resolution over the whole planet, in
+  // half floats so the renderer can filter it. The sky and the cloud shadows read it directly, so
+  // the clouds on screen are the model's clouds and nothing else.
+  const FS_CLOUD = COMMON + `
+layout(location=0) out vec4 o0; layout(location=1) out vec4 o1; layout(location=2) out vec4 o2;
+void main(){
+  ivec2 f=ivec2(gl_FragCoord.xy); int i=f.x, j=f.y;
+  o0=vec4(S2(i,j,0).r,S2(i,j,1).r,S2(i,j,2).r,S2(i,j,3).r);
+  o1=vec4(S2(i,j,4).r,S2(i,j,5).r,S2(i,j,6).r,S2(i,j,7).r);
+  o2=vec4(SF(i,j).y,0.0,0.0,1.0);
+}`;
+
   const P = {
-    dyn: prog(FS_DYN), diag: prog(FS_DIAG), col: prog(FS_COL), scat: prog(FS_SCAT), surf: prog(FS_SURF), pack: prog(FS_PACK),
+    dyn: prog(FS_DYN), diag: prog(FS_DIAG), col: prog(FS_COL), scat: prog(FS_SCAT), surf: prog(FS_SURF), pack: prog(FS_PACK), cloud: prog(FS_CLOUD),
   };
 
   // ---- state ----
@@ -389,6 +402,18 @@ void main(){
     return { w, h, ts, f, data: [new Float32Array(w * h * 4), new Float32Array(w * h * 4), new Float32Array(w * h * 4)], pbo: [0, 1, 2].map(() => { const b = gl.createBuffer(); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, b); gl.bufferData(gl.PIXEL_PACK_BUFFER, w * h * 16, gl.STREAM_READ); return b; }), fence: null, o: [0, 0], ready: false, pending: null };
   };
   const win = mkPack(WIN, WIN), glob = mkPack(CG[0], CG[1]);
+  const cloudTex = [0, 1, 2].map(() => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, NX, NY, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.REPEAT], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    return t;
+  });
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  for (const t of cloudTex) { gl.bindTexture(gl.TEXTURE_2D, t); gl.generateMipmap(gl.TEXTURE_2D); }
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  const FCL = fbo(cloudTex);
+  if (!FCL) return null;
   gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
 
   const api = {
@@ -396,7 +421,7 @@ void main(){
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
     rad: 420, conv: 40, diff: 0.04, divD: 1.2,
     steps: 0, passMask: 15,
-    win, glob,
+    win, glob, cloudTex,
   };
 
   function bindCommon(p) {
@@ -438,6 +463,11 @@ void main(){
       gl.bindFramebuffer(gl.FRAMEBUFFER, FS[scur ^ 1]); gl.viewport(0, 0, NX, NY);
       if (m & 8) { bindCommon(P.surf); gl.drawArrays(gl.TRIANGLES, 0, 3); scur ^= 1; }
       api.steps++;
+    }
+    if (n > 0) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, FCL); gl.viewport(0, 0, NX, NY); bindCommon(P.cloud); gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.activeTexture(gl.TEXTURE0 + 12);
+      for (const t of cloudTex) { gl.bindTexture(gl.TEXTURE_2D, t); gl.generateMipmap(gl.TEXTURE_2D); }
     }
   }
   function pack(pk, ox, oz, sx, sz) {

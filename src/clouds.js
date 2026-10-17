@@ -2,8 +2,9 @@
 // Prevailing winds by latitude and drifting storm systems carry water vapour. Air that is forced
 // up a mountainside, drawn into a storm's core or heated over warm land cools, its vapour
 // condenses into cloud, and thick cloud rains out. In the lee of mountains the air sinks, warms
-// and the cloud evaporates again. The cloud field is uploaded as a texture that a raymarcher
-// shapes into 3D clouds, and that the terrain reads for cloud shadows.
+// and the cloud evaporates again. When the global atmosphere (atmos.js) runs, the sky draws its
+// cloud water directly and this sim takes its cloud and rain from it; on its own (no float render
+// targets) this sim's cloud is spread into the same layered volume so the same renderer draws it.
 // Cloud types follow from why the air rose: gentle, widespread lift gives flat stratus sheets,
 // warm land gives cumulus, strong storm cores and hot afternoons tower into cumulonimbus that
 // spread an anvil under the tropopause and throw lightning. High cirrus is a separate thin layer
@@ -45,36 +46,39 @@ function createWeather(gl) {
   const mean = [0, 0];
   const smooth01 = x => { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); };
 
-  // ---- GPU resources: the cloud map and a tiling 3D noise for the cloud shapes ----
-  // Each map is kept twice: the last two simulation steps. The field steps four times a second and
-  // the shaders cross-fade from the older map to the newer one in between, so cloud cover changes
-  // smoothly instead of popping at every step.
-  const mkMap = (fmt, ifmt, src, mip) => {
+  // ---- GPU resources ----
+  const mkMap = (fmt, ifmt, src) => {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, N, N, 0, fmt, gl.UNSIGNED_BYTE, src);
-    if (mip) gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return t;
   };
-  // map: R cover, G tops, B rain; map2: R = cirrus, G = how convective the cloud is (0 stratus .. 1 cumulonimbus)
-  const maps = [mkMap(gl.RGBA, gl.RGBA8, px, true), mkMap(gl.RGBA, gl.RGBA8, px, true)];
-  const maps2 = [mkMap(gl.RG, gl.RG8, px2, true), mkMap(gl.RG, gl.RG8, px2, true)];
   // snow map: R the height (/2) above which the season's snow lies, G the lower edge (/2) of fresh
   // snow, B how much fresh snow; it stays put on the land, so it has its own origin
-  const snowMap = mkMap(gl.RGBA, gl.RGBA8, px3, false);
+  const snowMap = mkMap(gl.RGBA, gl.RGBA8, px3);
   let snowO = [0, 0];
-  let cur = 0, lastDt = 0.25;
-  // grid origin and mean wind each map was made with
-  const mapO = [[0, 0, 0, 0], [0, 0, 0, 0]];
+  // Without the global atmosphere this sim's cloud goes into a layered volume shaped like the
+  // atmosphere's (cloud water per layer 0-3, 4-7, and rain at the ground), over the local window:
+  // its cloud spread from layer 1 up to the layer its tops reach.
+  const cvol = [0, 1, 2].map(() => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, N, N, 0, gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  });
+  const cvData = [0, 1, 2].map(() => new Float32Array(NN * 4));
+  let cvO = [0, 0];
+  // tiling 3D value noise for the water surface (R fbm, G inverted Worley)
   const noise = gl.createTexture();
   {
-    // R: tiling value-noise fbm, G: inverted Worley (billows), both tiling once over the texture.
-    // 64 texels across (it was 32, which looked soft and blocky up close) with one more octave
-    // of each for the small detail on cloud edges
     const S = 64, out = new Uint8Array(S * S * S * 2);
     let seed = 9127;
     const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
@@ -117,54 +121,6 @@ function createWeather(gl) {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.REPEAT);
-  }
-
-  // 2D cloud texture for the sky layer, tiling, 256 texels: R broad fbm, G big inverted-Worley billows,
-  // B finer fbm, A small billows. Mipmapped so distant cloud is filtered, not aliased.
-  const tex2 = gl.createTexture();
-  {
-    const S = 256, out = new Uint8Array(S * S * 4);
-    let seed = 4721;
-    const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
-    const lat = n => { const a = new Float32Array(n * n); for (let i = 0; i < a.length; i++) a[i] = rnd(); return a; };
-    const vn = (L, n, x, y) => {
-      const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
-      const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
-      const g = (a, b) => L[(((b % n) + n) % n) * n + (((a % n) + n) % n)];
-      return (g(xi, yi) * (1 - sx) + g(xi + 1, yi) * sx) * (1 - sy) + (g(xi, yi + 1) * (1 - sx) + g(xi + 1, yi + 1) * sx) * sy;
-    };
-    const fbm = (o0, oN, x, y) => { let v = 0, w = 0, a = 1; for (let o = o0; o < oN; o++) { const n = 4 << o; v += vn(LS[o], n, x * n, y * n) * a; w += a; a *= 0.55; } return v / w; };
-    const LS = []; for (let o = 0; o < 7; o++) LS.push(lat(4 << o));
-    const pts = F => { const a = []; for (let i = 0; i < F * F; i++) a.push([rnd(), rnd()]); return a; };
-    const worley = (F, fp, x, y) => {
-      const cx = x * F, cy = y * F, ix = Math.floor(cx), iy = Math.floor(cy);
-      let d = 9;
-      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
-        const gx = ix + a, gy = iy + b, q = fp[(((gy % F) + F) % F) * F + (((gx % F) + F) % F)];
-        const dx = gx + q[0] - cx, dy = gy + q[1] - cy;
-        d = Math.min(d, dx * dx + dy * dy);
-      }
-      return Math.sqrt(d);
-    };
-    const f6 = pts(6), f13 = pts(13), f24 = pts(24), f47 = pts(47);
-    const c01 = v => Math.round(Math.min(1, Math.max(0, v)) * 255);
-    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-      const u = x / S, v = y / S, i = (y * S + x) * 4;
-      out[i] = c01((fbm(0, 5, u, v) - 0.22) / 0.56);
-      // billows use the squared cell distance: round-topped bumps (plain distance makes cones,
-      // which stood up as pointed fins once the clouds got height)
-      const bw = (F, fp) => Math.max(0, 1 - (worley(F, fp, u, v) * 1.15) ** 2);
-      out[i + 1] = c01(bw(6, f6) * 0.7 + bw(13, f13) * 0.3);
-      out[i + 2] = c01((fbm(2, 7, u, v) - 0.2) / 0.6);
-      out[i + 3] = c01(bw(24, f24) * 0.65 + bw(47, f47) * 0.35);
-    }
-    gl.bindTexture(gl.TEXTURE_2D, tex2);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, S, S, 0, gl.RGBA, gl.UNSIGNED_BYTE, out);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
   }
   // mean cloud cover of the whole map, used for sky beyond the map's edge
   let meanCover = 0.3, maxRain = 0, soilWet = 0;
@@ -656,10 +612,18 @@ function createWeather(gl) {
       if (snE[n] > hgt[n] + 70) sn[n] = Math.max(0, sn[n] - dt / 600);
     }
     soilWet = landN ? rainSum / landN : 0;
+    // with the global atmosphere its cloud and rain replace this sim's own, so the shadows, the rain
+    // on the player, the wet ground, snow and lightning all come from the clouds that are drawn
+    const AW = api.atmos && api.atmos.win.ready ? api.atmos : null;
+    if (AW) for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const n = j * N + i, gi = ox + i + 0.5, gj = oz + j + 0.5;
+      c[n] = Math.min(1, AW.sampleWin(1, 1, gi, gj) * 2) / 2.6;
+      rainOut[n] = Math.max(0, AW.sampleWin(2, 0, gi, gj)) * api.atmosGain.rain;
+    }
   }
   function upload() {
     for (let n = 0; n < NN; n++) {
-      const cov = Math.max(Math.min(1, c[n] * 2.6), shield[n]);
+      const cov = api.atmos ? Math.min(1, c[n] * 2.6) : Math.max(Math.min(1, c[n] * 2.6), shield[n]);
       px[n * 4] = Math.round(Math.min(1, Math.sqrt(cov)) * 255);
       px[n * 4 + 1] = Math.round(tops[n] * 255);
       px[n * 4 + 2] = Math.round(Math.min(1, rainOut[n] * 4) * 255);
@@ -668,14 +632,25 @@ function createWeather(gl) {
       px2[n * 2 + 1] = Math.round(cvt[n] * 255);
     }
     { let t = 0, m = 0; for (let n = 0; n < NN; n++) { t += px[n * 4]; if (px[n * 4 + 2] > m) m = px[n * 4 + 2]; } meanCover = t / NN / 255; maxRain = m / 255; }
-    cur ^= 1;
-    mapO[cur] = [ox, oz, mean[0], mean[1]];
-    gl.bindTexture(gl.TEXTURE_2D, maps[cur]);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.bindTexture(gl.TEXTURE_2D, maps2[cur]);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RG, gl.UNSIGNED_BYTE, px2);
-    gl.generateMipmap(gl.TEXTURE_2D);
+    if (!api.atmos) {
+      // this sim's cloud as layered cloud water for the renderer: from layer 1 up to its tops
+      // (tops 0..1 reach layers 1..7), and its rain at the ground
+      const [a, b, r] = cvData;
+      for (let n = 0; n < NN; n++) {
+        const w = c[n] * 1.2, top = 1 + tops[n] * 6;
+        for (let k = 0; k < 8; k++) {
+          const f = k < 1 ? 0 : Math.min(1, Math.max(0, top - k + 0.5));
+          (k < 4 ? a : b)[n * 4 + (k & 3)] = w * f;
+        }
+        r[n * 4] = rainOut[n] / api.atmosGain.rain;
+      }
+      for (let t = 0; t < 3; t++) {
+        gl.bindTexture(gl.TEXTURE_2D, cvol[t]);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, cvData[t]);
+        gl.generateMipmap(gl.TEXTURE_2D);
+      }
+      cvO = [ox, oz];
+    }
     const e2 = y => Math.round(Math.min(255, Math.max(0, y / 2)));
     for (let n = 0; n < NN; n++) {
       px3[n * 4] = e2(hgt[n] + (tmp[n] - 1) / 0.25);
@@ -735,73 +710,6 @@ function createWeather(gl) {
   }
 
 
-  // ---- 3D cloud shape noise (since v65): a 128³ Perlin-Worley base (R) with three Worley fbm
-  // octaves (GBA), and a 64³ Worley detail texture, baked on the GPU once at start. Both tile.
-  const bakeCloudNoise = () => {
-    const VSN = '#version 300 es\nvoid main(){ vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }';
-    const FSN = `#version 300 es
-precision highp float;
-uniform float uZ, uSize; uniform int uKind;
-out vec4 o;
-vec3 hash33(vec3 p){ p=fract(p*vec3(0.1031,0.1030,0.0973)); p+=dot(p,p.yxz+33.33); return fract((p.xxy+p.yxx)*p.zyx); }
-float worley(vec3 p, float per){
-  vec3 id=floor(p), f=fract(p); float md=1.0;
-  for(int z=-1;z<=1;z++) for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++){
-    vec3 of=vec3(x,y,z); vec3 r=of+hash33(mod(id+of,per))-f; md=min(md,dot(r,r));
-  }
-  return 1.0-sqrt(md);
-}
-float wfbm(vec3 p, float f){ return worley(p*f,f)*0.625+worley(p*f*2.0,f*2.0)*0.25+worley(p*f*4.0,f*4.0)*0.125; }
-float gr(vec3 i, vec3 f, vec3 of, float per){ vec3 g=normalize(hash33(mod(i+of,per)+0.5)*2.0-1.0+1e-4); return dot(g,f-of); }
-float perlin(vec3 p, float per){
-  vec3 i=floor(p), f=fract(p), u=f*f*f*(f*(f*6.0-15.0)+10.0);
-  return mix(mix(mix(gr(i,f,vec3(0,0,0),per),gr(i,f,vec3(1,0,0),per),u.x),mix(gr(i,f,vec3(0,1,0),per),gr(i,f,vec3(1,1,0),per),u.x),u.y),
-             mix(mix(gr(i,f,vec3(0,0,1),per),gr(i,f,vec3(1,0,1),per),u.x),mix(gr(i,f,vec3(0,1,1),per),gr(i,f,vec3(1,1,1),per),u.x),u.y),u.z);
-}
-float pfbm(vec3 p, float f){ float s=0.0, a=1.0, n=0.0; for(int i=0;i<5;i++){ s+=perlin(p*f,f)*a; n+=a; a*=0.5; f*=2.0; } return s/n*1.4; }
-void main(){
-  vec3 p=vec3(gl_FragCoord.xy/uSize,(uZ+0.5)/uSize);
-  if(uKind==0){
-    float g=wfbm(p,4.0), b=wfbm(p,8.0), a=wfbm(p,16.0);
-    float pn=abs(pfbm(p,4.0));
-    o=vec4(clamp(g+pn*(1.0-g),0.0,1.0),g,b,a);
-  } else o=vec4(wfbm(p,2.0),wfbm(p,4.0),wfbm(p,8.0),1.0);
-}`;
-    const pr = gl.createProgram();
-    for (const [t, src] of [[gl.VERTEX_SHADER, VSN], [gl.FRAGMENT_SHADER, FSN]]) {
-      const sh = gl.createShader(t); gl.shaderSource(sh, src); gl.compileShader(sh);
-      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error('cloud noise: ' + gl.getShaderInfoLog(sh));
-      gl.attachShader(pr, sh);
-    }
-    gl.linkProgram(pr);
-    const vao = gl.createVertexArray(), fb = gl.createFramebuffer();
-    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING), vp = gl.getParameter(gl.VIEWPORT);
-    gl.useProgram(pr); gl.bindVertexArray(vao); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-    const bake = (S, kind) => {
-      const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, t);
-      gl.texStorage3D(gl.TEXTURE_3D, Math.log2(S) + 1, gl.RGBA8, S, S, S);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.REPEAT);
-      gl.viewport(0, 0, S, S);
-      gl.uniform1f(gl.getUniformLocation(pr, 'uSize'), S); gl.uniform1i(gl.getUniformLocation(pr, 'uKind'), kind);
-      const uZ = gl.getUniformLocation(pr, 'uZ');
-      for (let z = 0; z < S; z++) {
-        gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, t, 0, z);
-        gl.uniform1f(uZ, z); gl.drawArrays(gl.TRIANGLES, 0, 3);
-      }
-      gl.generateMipmap(gl.TEXTURE_3D);
-      return t;
-    };
-    const base = bake(128, 0), detail = bake(64, 1);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb); gl.viewport(vp[0], vp[1], vp[2], vp[3]);
-    gl.bindVertexArray(null); gl.enable(gl.DEPTH_TEST);
-    gl.deleteFramebuffer(fb); gl.deleteProgram(pr);
-    return { base, detail };
-  };
-  const cloudNoise = bakeCloudNoise();
-
   const api = {
     windMul: 1,
     // time of day in hours, set every frame: drives the daily cycle of heating, convection and fog
@@ -813,24 +721,18 @@ void main(){
     dayLen: 1200,
     // the global GPU atmosphere when it runs (set by the game), and how its fields map onto this sim
     atmos: null,
-    atmosGain: { wind: 0.9, lift: 10, rainLift: 4, cirrus: 2.2, shield0: 0.08, shield1: 0.35, rainShield: 6, conv: 3, air: 0.8 },
+    atmosGain: { rain: 25, wind: 0.9, lift: 10, rainLift: 4, cirrus: 2.2, shield0: 0.08, shield1: 0.35, rainShield: 6, conv: 3, air: 0.8 },
     envChanged() { if (pl) staticFields(); },
-    noise, mean, tex2, cloudBase: cloudNoise.base, cloudDetail: cloudNoise.detail,
+    noise, mean,
+    // the local cloud volume (fallback without the global atmosphere) and its origin in planet cells
+    get cloudVol() { return cvol; }, get cloudVolO() { return cvO; },
     get meanCover() { return meanCover; }, get maxRain() { return maxRain; },
     // how much wetter (+) or drier (-) than its usual the land around the player is (about
     // -0.5..0.5): the rivers draining it run high after rain and low after a dry spell
     get soilWet() { return soilWet; },
-    get map() { return maps[cur]; }, get map2() { return maps2[cur]; },
     get snowMap() { return snowMap; }, get snowOrigin() { return snowO; },
     // fresh snow lying at a world position and height (0..1), for tests
     snowAt(x, z, y) { const i = Math.floor(x / PC) - ox, j = Math.floor(z / PC) - oz; if (i < 0 || j < 0 || i >= N || j >= N) return 0; const n = j * N + i; return sn[n] * smooth01((y - snE[n] + 2) / 6); },
-    get mapPrev() { return maps[cur ^ 1]; }, get map2Prev() { return maps2[cur ^ 1]; },
-    // the field is stepped four times a second; between steps each map slides on with the mean wind
-    // so clouds and their shadows drift smoothly, and the older map (one step further along) fades
-    // into the newer one
-    get origin() { const o = mapO[cur]; return [o[0] + o[2] * CLOUD_ADV * acc, o[1] + o[3] * CLOUD_ADV * acc]; },
-    get originPrev() { const o = mapO[cur ^ 1]; return [o[0] + o[2] * CLOUD_ADV * (acc + lastDt), o[1] + o[3] * CLOUD_ADV * (acc + lastDt)]; },
-    get blend() { return Math.min(1, acc / 0.25); },
     get ready() { return ready; },
     reset(planet, seed, x, z, season) {
       pl = planet; ready = false;
@@ -856,7 +758,7 @@ void main(){
       }
       if (Math.abs(cx - ox) >= 12 || Math.abs(cz - oz) >= 12) shift(cx, cz);
       acc += dt;
-      if (acc >= 0.25) { step(acc); lastDt = acc; acc = 0; upload(); }
+      if (acc >= 0.25) { step(acc); acc = 0; upload(); }
       lightning(dt);
     },
     // the current lightning strike and its brightness right now (0 when dark)
