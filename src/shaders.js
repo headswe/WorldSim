@@ -497,6 +497,12 @@ void main(){
     c=vec3(0.92,0.94,0.97)*(0.93+0.07*th(ch,tx/2));
   } else if(b==26u){
     c=mix(vec3(0.62,0.78,0.88),vec3(0.80,0.90,0.96),th(ch,tx/3));
+  } else if(b==30u){
+    // salt crust: off-white, cracked into plates with a faint brown line where the edges curl up
+    c=vec3(0.93,0.92,0.88)*(0.95+0.06*n);
+    vec2 q=fract(vWorld.xz*0.5+0.25*vec2(vn2(vWorld.xz*0.7),vn2(vWorld.xz*0.7+9.0)));
+    float edge=min(min(q.x,1.0-q.x),min(q.y,1.0-q.y));
+    if(top && edge<0.05) c=mix(c,vec3(0.72,0.66,0.56),0.6);
   } else c=vec3(1.0,0.0,1.0);
   // snow settles on every upward face and creeps over the top edge of sides: the season's lasting
   // snow above the snow line, and fresh snow wherever it has been snowing until it melts
@@ -504,7 +510,7 @@ void main(){
   if(sc>0.0 && b!=25u && b!=26u){
     float spot=th(ch,tx/4+ivec2(3,11));
     // sides only creep on ground blocks; logs and leaves would show a band on every block
-    bool ground = b==1u||b==2u||b==4u||b==14u||b==15u;
+    bool ground = b==1u||b==2u||b==4u||b==14u||b==15u||b==30u;
     float cover = top ? 1.0 : side && ground && lp.y>0.86-0.12*n ? 0.85 : 0.0;
     snowA=smoothstep(0.25,0.75,sc*cover*(0.75+0.45*spot));
     c=mix(c,SNOWC*(0.93+0.07*n),snowA);
@@ -515,7 +521,7 @@ void main(){
   float wetA=0.0, pud=0.0;
   if(uWet>0.0 && b!=25u && b!=26u){
     wetA=uWet*(1.0-snowA)*(top?1.0:0.65);
-    if(top && (b==1u||b==2u||b==3u||b==4u||b==14u||b==15u||b==16u)){
+    if(top && (b==1u||b==2u||b==3u||b==4u||b==14u||b==15u||b==16u||b==30u)){
       float pn=vn2(vWorld.xz*0.08)*0.65+vn2(vWorld.xz*0.27+17.0)*0.35;
       pud=smoothstep(0.5,0.54,pn+0.1*(uWet-1.0))*smoothstep(0.35,0.8,uWet)*(1.0-snowA);
     }
