@@ -55,6 +55,9 @@ body:not(.playing) #hotbar { display: none; }
 .mapmodes { display: flex; flex-wrap: wrap; gap: 6px; }
 .mapmodes button { font: 600 11px var(--mono); color: var(--ash); background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; cursor: pointer; }
 .mapmodes button:hover { color: var(--parch); border-color: rgba(232,116,59,.6); }
+.maplg { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font: 600 10px var(--mono); color: var(--ash); vertical-align: middle; }
+.maplg b { display: inline-block; width: 90px; height: 8px; border-radius: 2px; }
+.maplg i { font-style: normal; }
 .mapmodes button[aria-pressed=true] { color: var(--parch); border-color: var(--ember); background: rgba(232,116,59,.14); }
 .mapmodes kbd { font-size: 10px; margin-right: 2px; }
 .overlays { align-items: center; }
@@ -203,7 +206,7 @@ body.flying #touchui #t-down { display: block; }
     <canvas id="map"></canvas>
     <div class="mapmodes" id="mapmodes" role="toolbar" aria-label="Map view"></div>
     <div class="mapmodes overlays" id="mapoverlays" role="toolbar" aria-label="Map overlays"><span class="ol-label">Overlays</span></div>
-    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span id="maphelp"><kbd>Ctrl</kbd>+click to teleport · <kbd>1</kbd>–<kbd>6</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span><span class="mapmodes" id="map-closebar"><button id="map-close" type="button">Close map</button></span></div>
+    <div class="maplegend"><span id="mapdesc">Plates, rain and erosion simulated for this seed</span><span id="mapinfo"></span><span id="maphelp"><kbd>Ctrl</kbd>+click to teleport · <kbd>1</kbd>–<kbd>=</kbd> view · letters toggle overlays · <kbd>M</kbd> or <kbd>Esc</kbd> to close</span><span class="mapmodes" id="map-closebar"><button id="map-close" type="button">Close map</button></span></div>
   </div>
 </div>
 <div id="menu">
@@ -297,7 +300,7 @@ body.flying #touchui #t-down { display: block; }
         <div class="group">
           <div class="label">On the map</div>
           <dl class="keys">
-            <dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Terrain, plates, rain, temperature, drainage, rivers</dd>
+            <dt><kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd> <kbd>-</kbd> <kbd>=</kbd></dt><dd>Terrain, plates, rain, temperature, drainage, rivers, currents, rain season, moisture, July, January, sediment</dd>
             <dt><kbd>R</kbd> <kbd>H</kbd> <kbd>P</kbd> <kbd>W</kbd> <kbd>C</kbd> <kbd>G</kbd> <kbd>T</kbd></dt><dd>Rivers, contours, plates, wind, clouds, grid, trail</dd>
             <dt><kbd>Ctrl</kbd>+click</dt><dd>Teleport there</dd>
             <dt>Double-tap</dt><dd>Teleport there on a touch screen</dd>

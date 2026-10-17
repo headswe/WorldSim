@@ -14,7 +14,7 @@ const PLANET_X = PW * PCELL, PLANET_Z = PH * PCELL;
 const RIVER_MIN_PLANET = 2.2, RIVER_AREA = 6, DELTA_MIN = 18;
 // continental crust height, highland strength, background uplift during erosion
 const CONT_BASE = 0.6, HIGH_AMP = 1.2, BG_UP = 0.9;
-const BIOME = { OCEAN: 0, ICE: 1, TUNDRA: 2, TAIGA: 3, AUTUMN: 4, GRASS: 5, DESERT: 6, WARM: 7 };
+const BIOME = { OCEAN: 0, ICE: 1, TUNDRA: 2, TAIGA: 3, AUTUMN: 4, GRASS: 5, DESERT: 6, WARM: 7, SAVANNA: 8, SCRUB: 9 };
 
 function planetRng(seed) {
   let s = (seed >>> 0) || 1;
@@ -470,72 +470,125 @@ function simulatePlanet(seed, progress = () => {}) {
   }
 
   // ---- 2. climate ----
+  // Two seasons are worked out, July and January (northern summer and winter), and the year is
+  // their average. The sun drags the equatorial rain belt north and south with it (further over
+  // land, which heats faster), and the dry subtropical highs and the westerly storm track follow,
+  // so some lands get all their rain in one season: monsoon and savanna where the tropical rains
+  // visit in summer, Mediterranean coasts where the storms only reach in winter.
   progress('Blowing wind and rain across the oceans', 0.25);
   const temp = new Float32Array(PN), rain = new Float32Array(PN), tAnom = new Float32Array(PN);
-  for (let k = 0; k < PN; k++) {
-    const s = Math.abs(Math.sin(lat[k]));
-    temp[k] = planetTemp(s, elev[k]);
-  }
+  const sst = new Float32Array(PN), sstA = new Float32Array(PN), tAmp = new Float32Array(PN);
+  const rJul = new Float32Array(PN), rJan = new Float32Array(PN), oce = new Float32Array(PN), landSA = new Float32Array(PN);
+  const rainNoise = new Float32Array(PN);
+  for (let k = 0; k < PN; k++) rainNoise[k] = 0.85 + 0.3 * (fbm3(nRain, px[k], py[k], pz[k], 3, 4) + 0.5);
   // prevailing winds by latitude: trade winds blow west, westerlies east, polar winds west
-  for (let j = 0; j < PH; j++) {
-    const la = Math.abs(90 - (j + 0.5) / PH * 180);
-    const dir = la < 30 ? -1 : la < 60 ? 1 : -1;
-    // dry subtropical highs near 25-30 degrees, wet equator and mid-latitude storm belts
-    const belt = 0.35 + 0.95 * Math.exp(-((la - 3) ** 2) / 120) + 0.75 * Math.exp(-((la - 52) ** 2) / 160) - 0.25 * Math.exp(-((la - 27) ** 2) / 50);
-    let m = 0.5;
-    for (let pass = 0; pass < 2; pass++)
-      for (let s = 0; s < PW; s++) {
-        const i = dir > 0 ? s : PW - 1 - s, k = j * PW + i, kn = j * PW + W(i + dir);
-        const e = elev[k];
-        if (e <= 0) {
-          m += (1.2 - m) * 0.08 * Math.max(0.15, (temp[k] + 10) / 35); // evaporation from warm seas
-          if (pass) rain[k] = m * 0.4 * belt;
-        } else {
-          const rise = Math.max(0, elev[kn] - e);
-          const r = Math.min(m, m * (0.035 * belt + rise * 2.6));          // windward slopes wring the air out
-          m -= r * 0.9;
-          if (pass) rain[k] = r * 14 + m * 0.18 * belt;
-        }
+  const windDir = la => la < 30 ? -1 : la < 60 ? 1 : -1;
+  const climate = () => {
+    for (let k = 0; k < PN; k++) temp[k] = planetTemp(Math.abs(Math.sin(lat[k])), Math.max(0, elev[k]));
+    // Ocean currents. The trade winds and westerlies turn each ocean basin into a gyre: warm water
+    // runs poleward up its western side (the Gulf Stream, the Kuroshio) and cold water comes back
+    // toward the equator down its eastern side, welling up off the coast (California, Humboldt,
+    // Benguela). Further north the warm drift crosses the basin and keeps its far shore mild
+    // (Norway), while cold polar water runs down the western side (Labrador). Distances to land are
+    // measured along each row: which side of its basin a stretch of sea lies on.
+    const dW = new Float32Array(PN), dE = new Float32Array(PN), CAP = 80;
+    for (let j = 0; j < PH; j++) {
+      for (const [dir, D] of [[1, dW], [-1, dE]]) {
+        let d = CAP;
+        for (let pass = 0; pass < 2; pass++)
+          for (let s = 0; s < PW; s++) {
+            const i = dir > 0 ? s : PW - 1 - s, k = j * PW + i;
+            d = elev[k] > 0 ? 0 : Math.min(CAP, d + 1);
+            if (pass) D[k] = d;
+          }
       }
-  }
-  // oceanity: how much sea air reaches a cell along the prevailing wind. Coasts the wind blows
-  // onto stay mild; deep continental interiors downwind of a lot of land run colder
-  const oce = new Float32Array(PN);
-  for (let j = 0; j < PH; j++) {
-    const la = Math.abs(90 - (j + 0.5) / PH * 180), dir = la < 30 ? -1 : la < 60 ? 1 : -1;
-    let o = 1;
-    for (let pass = 0; pass < 2; pass++)
-      for (let s = 0; s < PW; s++) {
-        const i = dir > 0 ? s : PW - 1 - s, k = j * PW + i;
-        o = elev[k] <= 0 ? 1 : o * 0.93;
-        if (pass) oce[k] = o;
-      }
-  }
-  const oceS = blurWrap(oce, 2);
-  for (let k = 0; k < PN; k++) {
-    const la = Math.abs(lat[k]) * 180 / Math.PI, f = Math.min(1, Math.max(0, (la - 25) / 30));
-    tAnom[k] = elev[k] > 0 ? (oceS[k] - 0.45) * 6 * f : 0;
-    temp[k] += tAnom[k];
-  }
-  // cold currents run up the west coasts of the subtropics: cool sea air that holds its water,
-  // so those coasts are fog deserts (like the Atacama or the Namib)
-  for (let j = 0; j < PH; j++) {
-    const la = Math.abs(90 - (j + 0.5) / PH * 180);
-    if (la < 14 || la > 33) continue;
-    const w = Math.sin((la - 14) / 19 * Math.PI);
-    for (let i = 0; i < PW; i++) {
-      const k = j * PW + i;
-      if (elev[k] <= 0) continue;
-      let sea = 0;
-      for (let d = 1; d <= 4; d++) if (elev[j * PW + W(i - d)] <= 0) { sea = 1 - (d - 1) * 0.2; break; }
-      rain[k] *= 1 - 0.55 * w * sea;
     }
-  }
-  // rain also spreads north and south a little
-  {
-    const r2 = blurWrap(rain, 2);
-    for (let k = 0; k < PN; k++) rain[k] = r2[k] * (0.85 + 0.3 * (fbm3(nRain, px[k], py[k], pz[k], 3, 4) + 0.5));
-  }
+    for (let k = 0; k < PN; k++) {
+      if (elev[k] > 0) { sstA[k] = 0; continue; }
+      const la = Math.abs(lat[k]) * 180 / Math.PI;
+      // (open ocean with no shore within reach either way, like the Southern Ocean, has no gyre)
+      const basin = dW[k] < CAP && dE[k] < CAP ? 1 : 0.3;
+      const sub = Math.exp(-((la - 27) ** 2) / 120), pol = Math.exp(-((la - 55) ** 2) / 90);
+      sstA[k] = basin * (sub * (7 * Math.exp(-dW[k] / 9) - 8 * Math.exp(-dE[k] / 6))
+        + pol * (7 * Math.exp(-dE[k] / 14) - 5 * Math.exp(-dW[k] / 8)));
+    }
+    sstA.set(blurWrap(sstA, 2));
+    for (let k = 0; k < PN; k++) if (elev[k] > 0) sstA[k] = 0;
+    // oceanity: how much sea air reaches a cell along the prevailing wind. Coasts the wind blows
+    // onto stay mild (and take on the warmth or chill of the current offshore); deep continental
+    // interiors downwind of a lot of land run colder and swing further between summer and winter
+    for (let j = 0; j < PH; j++) {
+      const dir = windDir(Math.abs(90 - (j + 0.5) / PH * 180));
+      let o = 1, sa = 0;
+      for (let pass = 0; pass < 2; pass++)
+        for (let s = 0; s < PW; s++) {
+          const i = dir > 0 ? s : PW - 1 - s, k = j * PW + i;
+          if (elev[k] <= 0) { o = 1; sa = sstA[k]; } else { o *= 0.93; sa *= 0.9; }
+          if (pass) { oce[k] = o; landSA[k] = sa; }
+        }
+    }
+    const oceS = blurWrap(oce, 2), saS = blurWrap(landSA, 2);
+    for (let k = 0; k < PN; k++) {
+      const la = Math.abs(lat[k]) * 180 / Math.PI, f = Math.min(1, Math.max(0, (la - 25) / 30));
+      const s = Math.abs(Math.sin(lat[k]));
+      if (elev[k] > 0) {
+        tAnom[k] = (oceS[k] - 0.45) * 6 * f + saS[k] * 0.8;
+        // half the yearly range: a degree or two at the equator, ~20 in a far continental interior
+        tAmp[k] = (0.8 + 21 * Math.pow(s, 1.6)) * (0.3 + 0.7 * (1 - oceS[k]));
+      } else {
+        tAnom[k] = 0;
+        tAmp[k] = 0.4 + 6 * Math.pow(s, 1.5);
+      }
+      temp[k] += tAnom[k];
+      sst[k] = elev[k] > 0 ? 0 : Math.max(-1.8, planetTemp(s, 0) + sstA[k]);
+    }
+    // rain, one season at a time (hs = +1 for July, -1 for January)
+    const coldNear = new Float32Array(PN);
+    for (let j = 0; j < PH; j++)
+      for (let i = 0; i < PW; i++) {
+        const k = j * PW + i;
+        if (elev[k] <= 0) continue;
+        let c = 0;
+        for (let d = 1; d <= 4; d++) for (const kk of [j * PW + W(i - d), j * PW + W(i + d)]) if (elev[kk] <= 0) c = Math.min(c, sstA[kk] * (1 - (d - 1) * 0.2));
+        coldNear[k] = c;
+      }
+    for (const [hs, R] of [[1, rJul], [-1, rJan]]) {
+      for (let j = 0; j < PH; j++) {
+        const phi = 90 - (j + 0.5) / PH * 180, la = Math.abs(phi), dir = windDir(la);
+        // the summer hemisphere's storm track sits further poleward and is weaker
+        const sum = Math.sign(phi) === hs ? 1 : -1, storm = 52 + 4 * sum;
+        let m = 0.5;
+        for (let pass = 0; pass < 2; pass++)
+          for (let s = 0; s < PW; s++) {
+            const i = dir > 0 ? s : PW - 1 - s, k = j * PW + i, kn = j * PW + W(i + dir);
+            const e = elev[k];
+            // the equatorial rains follow the sun, further over land; the dry belt follows them
+            const itcz = (e > 0 ? 12 : 6) * hs, dl = phi - itcz;
+            const belt = 0.35 + 0.95 * Math.exp(-((dl - 3 * Math.sign(dl)) ** 2) / 120)
+              + (0.75 - 0.12 * sum) * Math.exp(-((la - storm) ** 2) / 160)
+              - 0.3 * Math.exp(-((Math.abs(dl) - 27) ** 2) / 50);
+            if (e <= 0) {
+              const T = sst[k] + tAmp[k] * hs * Math.sign(phi) * 0.6;
+              m += (1.2 - m) * 0.08 * Math.max(0.15, (T + 10) / 35); // evaporation from warm seas
+              if (pass) R[k] = m * 0.4 * belt;
+            } else {
+              const rise = Math.max(0, elev[kn] - e);
+              // windward slopes wring the air out (less so where the air is sinking in the dry season)
+              const r = Math.min(m, m * (0.035 * belt + rise * 2.6));
+              m -= r * 0.9;
+              // cold water offshore chills the air from below, so it holds its water: the coasts
+              // beside the upwelling currents are fog deserts (the Atacama, the Namib)
+              if (pass) R[k] = (r * 14 * Math.min(1.1, 0.25 + 0.75 * belt) + m * 0.18 * belt) * Math.max(0.4, 1 + 0.11 * coldNear[k]);
+            }
+          }
+      }
+      // rain also spreads north and south a little
+      const r2 = blurWrap(R, 2);
+      for (let k = 0; k < PN; k++) R[k] = Math.max(0, r2[k]) * rainNoise[k] * 1.3;
+    }
+    for (let k = 0; k < PN; k++) rain[k] = (rJul[k] + rJan[k]) * 0.5;
+  };
+  climate();
 
   // ---- 3. erosion ----
   const heap = makeHeap(PN);
@@ -591,8 +644,11 @@ function simulatePlanet(seed, progress = () => {}) {
   // they gather and planes the floor and walls into a U: broad troughs instead of gullies.
   const sinLat = new Float32Array(PN), ice = new Float32Array(PN);
   for (let k = 0; k < PN; k++) sinLat[k] = Math.abs(Math.sin(lat[k]));
-  const ITER = 40;
+  const ITER = 40, KT = globalThis.__KT ?? 0.05;
+  const pre = new Float32Array(PN), qs = new Float32Array(PN), dep = new Float32Array(PN);
   for (let it = 0; it < ITER; it++) {
+    // halfway through, the wind and rain are worked out again over the mountains as they now stand
+    if (it === ITER >> 1) climate();
     for (let k = 0; k < PN; k++) ice[k] = elev[k] > 0 ? Math.min(1, Math.max(0, -(planetTemp(sinLat[k], elev[k]) + tAnom[k]) / 6)) : 0;
     if (it % 4 === 0) progress('Eroding valleys', 0.3 + 0.55 * it / ITER);
     const n = flood();
@@ -603,17 +659,42 @@ function simulatePlanet(seed, progress = () => {}) {
     const K = 0.012, dt = 1;
     for (let o = 0; o < n; o++) {
       const k = order[o], r = recv[k];
-      if (r < 0 || elev[k] <= 0) continue;
+      if (r < 0 || elev[k] <= 0) { pre[k] = elev[k]; continue; }
       elev[k] = Math.max(elev[k] + uplift[k] * 0.012 * dt, Math.min(elev[k], 0.03));
-      // lake floor: no incision, and the sediment rivers bring in slowly fills it, so most
-      // basins end up as flat lake plains instead of inland seas (the deep rift basins keep
-      // their long lakes)
-      if (fill[k] > elev[k] + 1e-4) { elev[k] += (fill[k] - elev[k]) * 0.07 * (1 - 0.85 * Math.min(1, rift[k] * 2)); continue; }
+      pre[k] = elev[k];
+      // lake floor: no incision, and fine mud settles out of the still water, so most basins end
+      // up as flat lake plains instead of inland seas (the deep rift basins keep their long lakes)
+      if (fill[k] > elev[k] + 1e-4) { elev[k] += (fill[k] - elev[k]) * 0.035 * (1 - 0.85 * Math.min(1, rift[k] * 2)); continue; }
       const dx = (k % PW) !== (r % PW) && Math.floor(k / PW) !== Math.floor(r / PW) ? 1.414 : 1;
       const f = K * dt * (Math.sqrt(acc[k]) * (1 - 0.6 * ice[k]) + ice[k] * 1.6 * Math.pow(acc[k], 0.25)) / dx;
       const base = volc[k] ? Math.max(fill[r], 0) : fill[r];
       const nh = (elev[k] + f * base) / (1 + f);
       elev[k] = Math.max(nh, base + 1e-5);
+    }
+    // Sediment: what the streams wear away is carried on downstream, as much as the stream can
+    // move (more water and a steeper bed carry more), and the rest is dropped. So gravel fans spread
+    // where steep streams leave the mountains, rivers build up their own floodplains on the
+    // lowlands, lakes fill in from where the rivers enter, and a river reaching the sea pushes
+    // a delta out over the shallow shelf.
+    qs.fill(0);
+    for (let o = n - 1; o >= 0; o--) {
+      const k = order[o], r = recv[k];
+      if (elev[k] <= 0 || r < 0) continue;
+      let q = qs[k] + Math.max(0, pre[k] - elev[k]);
+      if (fill[k] > elev[k] + 1e-4) {
+        const d = Math.min(q, (fill[k] - elev[k]) * 0.5) * (1 - 0.85 * Math.min(1, rift[k] * 2));
+        elev[k] += d; dep[k] += d; q -= d;
+      } else if (!volc[k]) {
+        const dx = (k % PW) !== (r % PW) && Math.floor(k / PW) !== Math.floor(r / PW) ? 1.414 : 1;
+        const cap = KT * Math.sqrt(acc[k]) * Math.max(0, elev[k] - Math.max(elev[r], 0)) / dx;
+        if (q > cap) { const d = Math.min((q - cap) * 0.5, 0.01); elev[k] += d; dep[k] += d; q -= d; }
+      }
+      if (elev[r] > 0) qs[r] += q;
+      else if (elev[r] > -0.15) {
+        // at the coast: some settles on the shelf at the mouth, the rest the sea sweeps away
+        const d = Math.min(q * 0.3, 0.004 - elev[r]);
+        if (d > 0) { elev[r] += d; dep[r] += d; }
+      }
     }
     // hillslope creep softens the ridges a little
     if (it % 2 === 1) {
@@ -665,38 +746,112 @@ function simulatePlanet(seed, progress = () => {}) {
     }
     if (best >= 0) recv[k] = best;
   }
-  accumulate(n);
-  const mouths = mouthOf();
-  const lake = new Float32Array(PN); // lake surface elevation, 0 = none
-  for (let k = 0; k < PN; k++) if (elev[k] > 0 && fill[k] - elev[k] > 0.004) lake[k] = fill[k];
   for (let k = 0; k < PN; k++) {
     temp[k] = planetTemp(sinLat[k], elev[k]) + tAnom[k];
     ice[k] = elev[k] > 0 ? Math.min(1, Math.max(0, -temp[k] / 6)) : 0;
   }
+  // Water budget. Not all the rain reaches the sea: the warmer and drier the land, the more of it
+  // the air takes back. Streams crossing dry country soak away into their beds, and a basin with
+  // no outlet holds a lake only as big as its inflow can keep topped up against evaporation from
+  // its surface. Where that falls short the lake shrinks below its rim, or dries out into a flat
+  // salt pan, and nothing flows on out of the basin.
+  // (evaporation in the same units as rain: from open water, and the most the land could give up)
+  const petW = T => 0.02 * Math.max(0, T + 5), petL = T => 0.004 * Math.max(1, T + 5);
+  const arid = new Float32Array(PN), moist = new Float32Array(PN);
+  for (let k = 0; k < PN; k++) {
+    if (elev[k] <= 0) { moist[k] = 1; continue; }
+    const ai = rain[k] / petL(temp[k] + 0.5 * tAmp[k]);
+    arid[k] = Math.min(1, Math.max(0, 1 - ai));
+    moist[k] = ai / (1 + ai);
+  }
+  // the lakes: connected stretches of water standing in filled basins
+  const lakeId = new Int32Array(PN).fill(-1), lakes = [];
+  const isLakeCell = k => elev[k] > 0 && fill[k] - elev[k] > 0.004;
+  for (let k0 = 0; k0 < PN; k0++) {
+    if (lakeId[k0] >= 0 || !isLakeCell(k0)) continue;
+    const id = lakes.length, cells = [k0];
+    lakeId[k0] = id;
+    for (let q = 0; q < cells.length; q++) {
+      const k = cells[q], i = k % PW, j = (k - i) / PW;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const jj = j + dj;
+        if ((!di && !dj) || jj < 0 || jj >= PH) continue;
+        const kk = jj * PW + W(i + di);
+        if (lakeId[kk] < 0 && isLakeCell(kk) && Math.abs(fill[kk] - fill[k]) < 1e-3) { lakeId[kk] = id; cells.push(kk); }
+      }
+    }
+    let T = 0;
+    for (const k of cells) T += temp[k] + 0.5 * tAmp[k];
+    lakes.push({ cells, T: T / cells.length, Q: 0, keep: 1 });
+  }
+  // inflow to each lake, passing on only what's left over downstream (a few rounds, so lakes
+  // that drain into other lakes settle)
+  for (let pass = 0; pass < 3; pass++) {
+    for (const L of lakes) L.Q = 0;
+    for (let k = 0; k < PN; k++) { acc[k] = elev[k] > 0 ? rain[k] * (1 - 0.6 * arid[k]) : 0; area[k] = elev[k] > 0 ? 1 : 0; }
+    for (let o = n - 1; o >= 0; o--) {
+      const k = order[o], r = recv[k];
+      if (r < 0) continue;
+      let a = acc[k];
+      const id = lakeId[k];
+      if (id >= 0 && lakeId[r] !== id) { lakes[id].Q += a; a *= lakes[id].keep; }
+      else if (id < 0) a *= 1 - arid[k] * (0.02 + 0.1 / (1 + acc[k] / 5));
+      acc[r] += a; area[r] += area[k];
+    }
+    for (const L of lakes) { const E = petW(L.T) * L.cells.length; L.keep = L.Q > E ? (L.Q - E) / L.Q : 0; }
+  }
+  const lake = new Float32Array(PN); // lake surface elevation, 0 = none
+  const salt = new Uint8Array(PN), basin = new Uint8Array(PN);
+  for (const L of lakes) {
+    const E = petW(L.T) * L.cells.length;
+    if (L.Q >= E) { for (const k of L.cells) lake[k] = fill[k]; continue; }
+    // a closed lake: it covers only as many cells as its inflow can keep wet
+    const beds = L.cells.slice().sort((a, b) => elev[a] - elev[b]);
+    const m = Math.floor(L.Q / Math.max(1e-6, petW(L.T)));
+    const top = fill[beds[0]];
+    const lv = m >= 1 ? Math.min(top, elev[beds[Math.min(m, beds.length) - 1]] + 0.006) : 0;
+    for (const k of beds) {
+      if (lv && elev[k] < lv - 0.002) lake[k] = lv;
+      else basin[k] = 1;
+    }
+    // the dry floor around a shrunken or vanished lake in warm country is crusted with salt
+    if (L.T > 2) {
+      const ns = Math.ceil(beds.length * 0.45) + m;
+      for (let q = 0; q < Math.min(ns, beds.length); q++) if (basin[beds[q]]) salt[beds[q]] = 1;
+    }
+  }
+  const mouths = mouthOf();
   const biome = new Uint8Array(PN);
-  // dryness thresholds from the land rain distribution: the driest tenth is desert or steppe
-  // (judged on effective moisture: heat evaporates rain, so hot lands need more of it)
+  // Biomes from how warm and how wet a place is, and from when its rain falls. Effective moisture:
+  // heat evaporates rain, so hot lands need more of it. The thresholds are fixed amounts (about the
+  // driest tenth, quarter, 40% and half of the land on an Earth-like planet), so a planet with big
+  // dry interiors really does have more desert.
   const eff = new Float32Array(PN);
   for (let k = 0; k < PN; k++) eff[k] = rain[k] / (0.7 + 0.03 * Math.max(0, temp[k]));
-  const lr = [];
-  for (let k = 0; k < PN; k++) if (elev[k] > 0) lr.push(eff[k]);
-  lr.sort((a, b) => a - b);
-  const q = f => lr[Math.floor(lr.length * f)] || 0, r10 = q(0.1), r25 = q(0.25), r40 = q(0.4), q50 = q(0.5);
+  const r10 = 0.002, r25 = 0.014, r40 = 0.044, q50 = 0.08;
   for (let k = 0; k < PN; k++) {
     const t = temp[k], r = eff[k];
+    // rain in the local summer and winter half of the year
+    const north = lat[k] >= 0, rs = north ? rJul[k] : rJan[k], rw = north ? rJan[k] : rJul[k];
+    const dry = Math.min(rs, rw) / Math.max(1e-6, Math.max(rs, rw));
     let b;
     if (elev[k] <= 0) b = t < -6 ? BIOME.ICE : BIOME.OCEAN;
+    else if (salt[k] && t > 2) b = BIOME.DESERT;
     else if (t < -8) b = BIOME.ICE;
     else if (t < -1) b = BIOME.TUNDRA;
     else if (t < 6) b = BIOME.TAIGA;
     else if (r < r10) b = t > 14 ? BIOME.DESERT : BIOME.GRASS;
+    // warm lands where the storms only bring rain in winter: Mediterranean scrub and evergreen oak
+    else if (t >= 11 && t < 21 && rs < 0.45 * rw && r < q50 * 3) b = BIOME.SCRUB;
     // the drier half of the open plains is grassland: prairie and meadow with scattered trees
     else if (t < 20) b = r < r25 || (plain[k] > 0.5 && r < q50) ? BIOME.GRASS : BIOME.AUTUMN;
-    else b = r < r40 ? (r < r25 ? BIOME.DESERT : BIOME.GRASS) : BIOME.WARM;
+    // the tropics: rainforest where it rains all year, savanna where the rains come in one season
+    // or are too light for closed forest
+    else b = r < r25 ? BIOME.DESERT : r < r40 || (dry < 0.3 && r < q50 * 4) ? BIOME.SAVANNA : BIOME.WARM;
     biome[k] = b;
   }
   progress('Done', 1);
-  return { elev, fill, lake, acc, area, recv, rain, temp, biome, plate, mouths, ice, plain };
+  return { elev, fill, lake, acc, area, recv, rain, temp, biome, plate, mouths, ice, plain, sst, tAmp, rJul, rJan, dep, moist, salt, basin };
 }
 
 // mean temperature from latitude (sin) and height, roughly Earth-like
