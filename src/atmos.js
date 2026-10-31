@@ -174,7 +174,9 @@ void main(){
   vec2 v=a.xy-DT*vec2(px,py);
   // divergence damping: air piling up or spreading out is pushed back a little, which calms the
   // short gravity waves (the real atmosphere's are far smaller than this grid can show) and
-  // leaves the turning, balanced winds alone
+  // leaves the turning, balanced winds alone. Too weak (1.2) and the noise slowly mixes heat up
+  // through the layers until, after about 3,600 steps, the whole troposphere warms ~10 °C and the
+  // clouds evaporate; 2.4 holds steady past 6,000 steps
   v+=DT*uDivD*0.5*vec2(DG(i+1,j,k).g-DG(i-1,j,k).g,DG(i,j+1,k).g-DG(i,j-1,k).g);
   // the planet's spin turns moving air (to the right in the north, left in the south)
   float an=corio(j)*DT, ca=cos(an), sa=sin(an);
@@ -422,7 +424,7 @@ void main(){
   const api = {
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
-    rad: 420, conv: 40, diff: 0.04, divD: 1.2,
+    rad: 420, conv: 40, diff: 0.04, divD: 2.4,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
