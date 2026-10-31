@@ -153,7 +153,7 @@ float pres(int i,int j,int k){
   // Pass 1: dynamics. Advect (u, v, theta, q) and cloud, add pressure force, Coriolis, friction,
   // radiation, surface heat and evaporation, a little diffusion.
   const FS_DYN = COMMON + FRAG_IJK + SAMPLE + `
-uniform float uRad, uDiff, uDivD;
+uniform float uRad, uDiff, uDivD, uEvap;
 void main(){
   int i,j,k; ijk(i,j,k);
   vec4 s=S1(i,j,k), c2=S2(i,j,k);
@@ -202,7 +202,7 @@ void main(){
     // the sea and wet ground moisten the lowest air toward 80% of what air at the ground's
     // temperature holds, never past 90% of what this layer's own air holds
     float qs=min(qsat(Ts,0)*0.8,qsat(tAir(0,th),0)*0.9);
-    float E=(g.g>0.5 ? 0.012 : 0.008*wet)*(0.5+min(wind,2.0))*uHumid;
+    float E=(g.g>0.5 ? 0.012 : 0.008*wet)*(0.5+min(wind,2.0))*uHumid*uEvap;
     q+=max(0.0,qs*min(1.0,wet*1.2)-q)*E*DT;
   }
   o0=vec4(v,th,q);
@@ -225,7 +225,7 @@ void main(){
   // back into the layers and works out the vertical velocity. Done in two halves because WebGL 2
   // only promises four render targets.
   const FS_COL = COMMON + `
-uniform float uConvT; uniform int uHalf;
+uniform float uConvT, uRevap; uniform int uHalf;
 layout(location=0) out vec4 o0; layout(location=1) out vec4 o1; layout(location=2) out vec4 o2; layout(location=3) out vec4 o3;
 float gamOf(float T,float qs){ return LC*qs*17.27*237.3/((T+237.3)*(T+237.3)); }
 void main(){
@@ -278,7 +278,7 @@ void main(){
     c[m]-=r; F+=r;
     if(m==top) F+=rainC;
     float rh=q[m]/qsat(T,m);
-    float e=F*clamp((0.95-rh)*0.5,0.0,0.5);
+    float e=min(F,F*clamp((0.95-rh)*0.5,0.0,0.5)+uRevap*max(0.0,0.95*qsat(T,m)-q[m]));
     F-=e; q[m]+=e; th[m]-=LC*e;
   }
   // the stratosphere is dry: what little vapour and cloud reaches the top layer is slowly lost
@@ -424,7 +424,7 @@ void main(){
   const api = {
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
-    rad: 420, conv: 40, diff: 0.04, divD: 2.4,
+    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 1, revap: 0,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
@@ -436,7 +436,7 @@ void main(){
     const f = (n, v) => { if (p.u[n] !== undefined) gl.uniform1f(p.u[n], v); };
     f('uTod', api.tod); f('uPlayerX', api.playerX / 16 * SC); f('uPlayerN', api.playerZ / 16 < PHc / 2 ? 1 : -1);
     f('uSeason', api.season); f('uTempOff', api.temp); f('uHumid', api.humid); f('uStorm', api.stormMul);
-    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff);
+    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap);
   }
   // save and restore the GL state this module touches, so the renderer is never disturbed
   function withGL(fn) {
