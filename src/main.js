@@ -643,7 +643,7 @@ function drawMap() {
     const cc = document.createElement('canvas'); cc.width = W; cc.height = H;
     const im = cc.getContext('2d').createImageData(W, H);
     for (let n = 0; n < W * H; n++) {
-      const c = Math.min(1, Math.max(0, (B[n * 4 + 1] - 0.04) / 0.42)), r = Math.min(1, C[n * 4] * 12);
+      const c = Math.min(1, Math.max(0, (B[n * 4 + 1] - 0.04) / 0.42)), r = Math.min(1, Math.max(0, C[n * 4] - 0.019) * 25);
       im.data[n * 4] = 245 - r * 120; im.data[n * 4 + 1] = 248 - r * 70; im.data[n * 4 + 2] = 255;
       im.data[n * 4 + 3] = Math.max(c * c * (3 - 2 * c) * 200, r * 160);
     }

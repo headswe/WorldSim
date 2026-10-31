@@ -618,7 +618,7 @@ function createWeather(gl) {
     if (AW) for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const n = j * N + i, gi = ox + i + 0.5, gj = oz + j + 0.5;
       c[n] = Math.min(1, AW.sampleWin(1, 1, gi, gj) * 2) / 2.6;
-      rainOut[n] = Math.max(0, AW.sampleWin(2, 0, gi, gj)) * api.atmosGain.rain;
+      rainOut[n] = Math.max(0, AW.sampleWin(2, 0, gi, gj) - api.atmosGain.rain0) * api.atmosGain.rain;
     }
   }
   function upload() {
@@ -637,12 +637,13 @@ function createWeather(gl) {
       // (tops 0..1 reach layers 1..7), and its rain at the ground
       const [a, b, r] = cvData;
       for (let n = 0; n < NN; n++) {
-        const w = c[n] * 1.2, top = 1 + tops[n] * 6;
+        // the sky only draws water above 0.12 g/kg per layer and rain above rain0, so lift these past those cuts
+        const w = c[n] > 0.01 ? c[n] * 1.2 + 0.12 : 0, top = 1 + tops[n] * 6;
         for (let k = 0; k < 8; k++) {
           const f = k < 1 ? 0 : Math.min(1, Math.max(0, top - k + 0.5));
           (k < 4 ? a : b)[n * 4 + (k & 3)] = w * f;
         }
-        r[n * 4] = rainOut[n] / api.atmosGain.rain;
+        r[n * 4] = rainOut[n] > 0 ? rainOut[n] / api.atmosGain.rain + api.atmosGain.rain0 : 0;
       }
       for (let t = 0; t < 3; t++) {
         gl.bindTexture(gl.TEXTURE_2D, cvol[t]);
@@ -721,7 +722,7 @@ function createWeather(gl) {
     dayLen: 1200,
     // the global GPU atmosphere when it runs (set by the game), and how its fields map onto this sim
     atmos: null,
-    atmosGain: { rain: 25, wind: 0.9, lift: 10, rainLift: 4, cirrus: 2.2, shield0: 0.08, shield1: 0.35, rainShield: 6, conv: 3, air: 0.8 },
+    atmosGain: { rain: 12, rain0: 0.019, wind: 0.9, lift: 10, rainLift: 4, cirrus: 2.2, shield0: 0.08, shield1: 0.35, rainShield: 6, conv: 3, air: 0.8 },
     envChanged() { if (pl) staticFields(); },
     noise, mean,
     // the local cloud volume (fallback without the global atmosphere) and its origin in planet cells

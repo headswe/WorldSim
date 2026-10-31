@@ -160,6 +160,11 @@ vec3 skyCol(vec3 d){
 uniform sampler2D uCV0, uCV1, uCV2; uniform vec2 uCVO, uCVN; uniform float uCVWrap; uniform float uCloudOn;
 // the layers stacked on sea level, CLH blocks each; CEXT: extinction per block per g/kg
 const float CY0=30.0, CLH=250.0, CTOP=CY0+8.0*CLH, CEXT=0.05;
+// the sim keeps most of the air saturated with thin cloud; only water above CTHR g/kg in a layer is
+// drawn (what a cell holds beyond it is the part of the cell that is cloud), and only rain above
+// RAIN0 reaches the ground (lighter fall evaporates on the way down). The same cuts feed the HUD,
+// the map and the rain on the player.
+const float CTHR=0.12, RAIN0=0.019;
 vec2 cvUV(vec2 xz){ return (xz/16.0-uCVO)/uCVN; }
 float cvEdge(vec2 uv){
   if(uCVWrap>0.5) return 1.0;
@@ -187,6 +192,7 @@ float cWaterQ(vec3 p, float lod, bool fine){
   vec4 a,b;
   if(fine && lod<2.5){ a=cvBsp(uCV0,uv,lod); b=cvBsp(uCV1,uv,lod); }
   else { a=textureLod(uCV0,uv,lod); b=textureLod(uCV1,uv,lod); }
+  a=max(a-CTHR,0.0); b=max(b-CTHR,0.0);
   float L[10]=float[10](a.x,a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w,b.w);
   float zc=clamp(z,0.0,7.0); int k=int(min(floor(zc),6.0)); float f=zc-float(k), f2=f*f, f3=f2*f;
   // L[k+1] is layer k: the four layers around z
@@ -198,7 +204,7 @@ float cWaterQ(vec3 p, float lod, bool fine){
 // the cloud body as drawn, and a cheaper bilinear read for light and shadow (blurred anyway)
 float cWater(vec3 p, float lod){ return cWaterQ(p,lod,true); }
 float cWaterL(vec3 p, float lod){ return cWaterQ(p,lod,false); }
-float cRain(vec2 xz, float lod){ vec2 uv=cvUV(xz); return max(textureLod(uCV2,uv,lod).r,0.0)*cvEdge(uv); }
+float cRain(vec2 xz, float lod){ vec2 uv=cvUV(xz); return max(textureLod(uCV2,uv,lod).r-RAIN0,0.0)*1.6*cvEdge(uv); }
 // how much sunlight reaches p past the clouds: the cloud water along the sun ray, four looks
 // from p (or the bottom of the model) to its top
 float cloudShade(vec3 p){
