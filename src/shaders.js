@@ -165,21 +165,39 @@ float cvEdge(vec2 uv){
   if(uCVWrap>0.5) return 1.0;
   return smoothstep(0.0,0.1,uv.x)*smoothstep(1.0,0.9,uv.x)*smoothstep(0.0,0.1,uv.y)*smoothstep(1.0,0.9,uv.y);
 }
-// cloud water (g/kg) at p: bilinear between columns, linear between layer middles; under the
-// middle of the lowest layer it thins to nothing at sea level, over the top layer's middle to
-// nothing at the top of the model. lod blurs it for samples that stand for a long stretch of ray.
-float cWater(vec3 p, float lod){
+// cubic B-spline over the texels of a mip level, from four bilinear taps: the model's columns
+// are cells, and a dense cell read with plain bilinear filtering shows its edges as straight
+// walls; the spline rounds them while keeping each cell's water where the model put it
+vec4 cvBsp(sampler2D s, vec2 uv, float lod){
+  vec2 sz=vec2(textureSize(s,int(lod+0.5)));
+  vec2 p=uv*sz-0.5, i=floor(p), f=p-i, f2=f*f, f3=f2*f;
+  vec2 w0=(1.0-3.0*f+3.0*f2-f3)/6.0, w1=(4.0-6.0*f2+3.0*f3)/6.0, w2=(1.0+3.0*f+3.0*f2-3.0*f3)/6.0, w3=f3/6.0;
+  vec2 g0=w0+w1, g1=w2+w3;
+  vec2 c0=(i-0.5+w1/g0)/sz, c1=(i+1.5+w3/g1)/sz;
+  return g0.y*(g0.x*textureLod(s,vec2(c0.x,c0.y),lod)+g1.x*textureLod(s,vec2(c1.x,c0.y),lod))+g1.y*(g0.x*textureLod(s,vec2(c0.x,c1.y),lod)+g1.x*textureLod(s,vec2(c1.x,c1.y),lod));
+}
+// cloud water (g/kg) at p: a cubic B-spline across columns and across layers (layer middles at
+// CY0+CLH*(k+0.5)); under the lowest layer's middle it thins to nothing at sea level, over the top
+// layer's middle to nothing at the top of the model. lod blurs it for samples that stand for a
+// long stretch of ray.
+float cWaterQ(vec3 p, float lod, bool fine){
   float z=(p.y-CY0)/CLH-0.5;
   if(z<-0.5 || z>7.5) return 0.0;
   vec2 uv=cvUV(p.xz);
-  vec4 a=textureLod(uCV0,uv,lod), b=textureLod(uCV1,uv,lod);
-  float L[8]=float[8](a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w);
-  float zc=clamp(z,0.0,7.0); int k0=int(min(floor(zc),6.0)); float f=zc-float(k0);
-  float w=mix(L[k0],L[k0+1],f);
+  vec4 a,b;
+  if(fine && lod<2.5){ a=cvBsp(uCV0,uv,lod); b=cvBsp(uCV1,uv,lod); }
+  else { a=textureLod(uCV0,uv,lod); b=textureLod(uCV1,uv,lod); }
+  float L[10]=float[10](a.x,a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w,b.w);
+  float zc=clamp(z,0.0,7.0); int k=int(min(floor(zc),6.0)); float f=zc-float(k), f2=f*f, f3=f2*f;
+  // L[k+1] is layer k: the four layers around z
+  float w=L[k]*(1.0-3.0*f+3.0*f2-f3)/6.0+L[k+1]*(4.0-6.0*f2+3.0*f3)/6.0+L[k+2]*(1.0+3.0*f+3.0*f2-3.0*f3)/6.0+L[k+3]*f3/6.0;
   if(z<0.0) w*=(z+0.5)*2.0; // ramps from 0 at sea level to the layer's value at its middle
   if(z>7.0) w*=1.0-(z-7.0)*2.0;
   return max(w,0.0)*cvEdge(uv);
 }
+// the cloud body as drawn, and a cheaper bilinear read for light and shadow (blurred anyway)
+float cWater(vec3 p, float lod){ return cWaterQ(p,lod,true); }
+float cWaterL(vec3 p, float lod){ return cWaterQ(p,lod,false); }
 float cRain(vec2 xz, float lod){ vec2 uv=cvUV(xz); return max(textureLod(uCV2,uv,lod).r,0.0)*cvEdge(uv); }
 // how much sunlight reaches p past the clouds: the cloud water along the sun ray, four looks
 // from p (or the bottom of the model) to its top
@@ -188,7 +206,7 @@ float cloudShade(vec3 p){
   float sy=max(uSunDir.y,0.12), y0=max(p.y,CY0), od=0.0;
   for(int k=0;k<4;k++){
     float y=mix(y0,CTOP,(float(k)+0.5)/4.0);
-    od+=cWater(p+uSunDir*(y-p.y)/sy,1.0);
+    od+=cWaterL(p+uSunDir*(y-p.y)/sy,1.0);
   }
   od*=(CTOP-y0)/4.0/sy*CEXT;
   // forward scattering lets a lot of light through, so shadows are softer than the cloud is opaque
@@ -811,7 +829,7 @@ vec3 cLight(vec3 p, float lod, float mu, vec3 sunL, vec3 amb0, int nl){
   float od=0.0, ds=40.0; vec3 lp=p;
   for(int j=0;j<6;j++){
     if(j>=nl) break;
-    lp+=uSunDir*ds; od+=cWater(lp,lod+float(j)*0.5)*ds; ds*=1.8;
+    lp+=uSunDir*ds; od+=cWaterL(lp,lod+float(j)*0.5)*ds; ds*=1.8;
     if(lp.y>CTOP) break;
   }
   od*=CEXT;
@@ -822,18 +840,21 @@ vec3 cLight(vec3 p, float lod, float mu, vec3 sunL, vec3 amb0, int nl){
   }
   sun*=5.0;
   // skylight from above: cloud water over this point hides the sky
-  float up=(cWater(p+vec3(0.0,CLH*0.5,0.0),lod+1.0)+cWater(p+vec3(0.0,CLH*1.5,0.0),lod+1.5))*CLH*CEXT;
+  float up=(cWaterL(p+vec3(0.0,CLH*0.5,0.0),lod+1.0)+cWaterL(p+vec3(0.0,CLH*1.5,0.0),lod+1.5))*CLH*CEXT;
   vec3 amb=amb0*mix(0.25,1.0,exp(-up*0.5));
   vec3 R=sunL*sun+amb;
   if(uFlash.w>0.0) R+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0);
   return R;
 }
 vec4 skyClouds(vec3 d){
-  if(uCloudOn<0.5 || d.y<0.0 || uCam.y>=CTOP) return vec4(0.0);
+  if(uCloudOn<0.5 || uCam.y>=CTOP || (uCam.y<=CY0 && d.y<=0.0)) return vec4(0.0);
   // quality: Low/Medium/High/Ultra sets the slices per model layer and the light steps
   int per=uCloudQ<0.5?3:uCloudQ<1.5?4:uCloudQ<2.5?6:8, nl=uCloudQ<0.5?3:uCloudQ<2.5?4:5;
   float sh=CLH/float(per);
-  int i0=int(max(0.0,floor((uCam.y-CY0)/sh)+1.0)), nsl=8*per;
+  // slices at fixed heights from the camera upward, or (looking down) downward to sea level, so a
+  // ray toward the horizon keeps seeing the cloud it passes through below the camera's height
+  bool up=d.y>=0.0;
+  int nsl=8*per, i0=up ? int(max(0.0,floor((uCam.y-CY0)/sh)+1.0)) : int(min(float(nsl),ceil((uCam.y-CY0)/sh)-1.0));
   float mu=dot(d,uSunDir);
   vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9)*mix(1.0,0.3,uNight);
   vec3 amb0=uZenith*0.55+uHorizon*0.3;
@@ -841,10 +862,10 @@ vec4 skyClouds(vec3 d){
   const float TMAX=14000.0;
   float tprev=0.0;
   for(int i=0;i<64;i++){
-    int si=i0+i;
-    if(si>nsl) break;
+    int si=up ? i0+i : i0-i;
+    if(si>nsl || si<0) break;
     float y1=CY0+float(si)*sh;
-    float t1=d.y>1e-4 ? (y1-uCam.y)/d.y : TMAX;
+    float t1=abs(d.y)>1e-4 ? (y1-uCam.y)/d.y : TMAX;
     t1=min(t1,TMAX);
     float stp=t1-tprev;
     if(stp<=0.0) break;

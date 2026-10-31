@@ -354,8 +354,11 @@ void main(){
   vec4 a0=S1(i,j,0), a1=S1(i,j,1), a2=S1(i,j,2);
   vec2 wc=(a0.xy*0.35+a1.xy*0.45+a2.xy*0.2)/${SC.toFixed(1)};
   float w=(S2(i,j,1).b+S2(i,j,2).b)*0.5;
-  float col=0.0, hi=0.0;
-  for(int m=0;m<K;m++){ float cm=S2(i,j,m).r; if(m<K-3) col=max(col,cm); else hi=max(hi,cm); }
+  // col: how much of the sky the cloud hides, as the sky draws it (each layer is 250 blocks deep at
+  // 0.05 per block per g/kg), on the old 0..0.5 scale; hi: the thickest high cloud
+  float tau=0.0, hi=0.0;
+  for(int m=0;m<K;m++){ float cm=S2(i,j,m).r; tau+=cm; if(m>=K-3) hi=max(hi,cm); }
+  float col=0.5*(1.0-exp(-12.5*tau));
   vec4 sf=SF(i,j);
   float cl=clamp(col*2.0,0.0,1.0);
   float Ts=surfT(i,j,cl);
