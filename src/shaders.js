@@ -252,10 +252,32 @@ vec3 fogCol(vec3 dir){
   vec3 g=vec3(dot(uHorizon,vec3(0.3,0.5,0.2)));
   return mix(uHorizon,g,0.55)*1.05+uZenith*0.1+uSunCol*0.18*sa;
 }
+// cloud between the camera and a surface point: the sky pass draws the clouds only where the sky
+// shows, so without this a mountain behind a cloud stands in front of it as a flat grey wall.
+// Eight looks along the part of the segment inside the cloud deck, lit roughly (sun through the
+// cloud above, skylight); costs nothing when the segment stays under or over the deck.
+vec4 cloudFront(vec3 wp){
+  if(uCloudOn<0.5) return vec4(0.0);
+  vec3 a=uCam, dv=wp-a;
+  if(max(a.y,wp.y)<CY0 || min(a.y,wp.y)>CTOP) return vec4(0.0);
+  float t0=0.0, t1=1.0;
+  if(abs(dv.y)>1e-3){ float ta=(CY0-a.y)/dv.y, tb=(CTOP-a.y)/dv.y; t0=max(0.0,min(ta,tb)); t1=min(1.0,max(ta,tb)); }
+  if(t1<=t0) return vec4(0.0);
+  float L=length(dv)*(t1-t0), od=0.0, lod=max(0.0,log2(L/8.0/16.0));
+  for(int i=0;i<8;i++) od+=cWaterL(a+dv*mix(t0,t1,(float(i)+0.5)/8.0),lod);
+  float tm=length(dv)*mix(t0,t1,0.5);
+  float al=(1.0-exp(-od*L/8.0*CEXT))*exp(-max(tm-2500.0,0.0)*0.0003);
+  if(al<0.002) return vec4(0.0);
+  vec3 qm=a+dv*mix(t0,t1,0.5);
+  vec3 cc=uSunCol*max(uSunDir.y*1.6,0.9)*mix(1.0,0.3,uNight)*0.45*cloudShade(qm)+uZenith*0.55+uHorizon*0.3;
+  return vec4(cc,al);
+}
 vec3 applyFog(vec3 c, vec3 wp){
   vec3 dv=wp-uCam; float dist=length(dv); vec3 dir=dv/max(dist,1e-4);
   float f=1.0-exp(-pow(dist*uFogDen,2.0));
   c=mix(c, skyCol(dir), clamp(f,0.0,1.0));
+  vec4 cf=cloudFront(wp);
+  if(cf.a>0.0) c=mix(c,cf.rgb,cf.a);
   float rv=rainVeil(dir,dist);
   if(rv>0.0) c=mix(c,veilCol(),rv*0.85);
   // low fog: sea fog rolling in, or fog pooled in the valleys after a clear calm night
