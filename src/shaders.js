@@ -158,8 +158,12 @@ vec3 skyCol(vec3 d){
 // wraps), 0 for the local window of the fallback sim, which fades out at its edges. Nothing is
 // added to these fields: a cloud is drawn where the model holds cloud water, as dense as it holds.
 uniform sampler2D uCV0, uCV1, uCV2; uniform vec2 uCVO, uCVN; uniform float uCVWrap; uniform float uCloudOn;
-// the layers stacked on sea level, CLH blocks each; CEXT: extinction per block per g/kg
-const float CY0=30.0, CLH=250.0, CTOP=CY0+8.0*CLH, CEXT=0.05;
+// the layers stacked from CY0, CLH blocks each; CEXT: extinction per block per g/kg. The model's
+// columns are 16 blocks wide, so its weather systems are only a few hundred blocks across: the
+// layers are squashed to the same proportions (a deck of cloud flatter than it is wide, as on
+// Earth), or every cloud would stand as a pillar or a wall 2,000 blocks tall. Each layer keeps the
+// optical depth it had at 250 blocks.
+const float CY0=110.0, CLH=45.0, CTOP=CY0+8.0*CLH, CEXT=0.05*250.0/CLH;
 // the sim keeps most of the air saturated with thin cloud; only water above CTHR g/kg in a layer is
 // drawn (what a cell holds beyond it is the part of the cell that is cloud), and only rain above
 // RAIN0 reaches the ground (lighter fall evaporates on the way down). The same cuts feed the HUD,
@@ -182,7 +186,7 @@ vec4 cvBsp(sampler2D s, vec2 uv, float lod){
   return g0.y*(g0.x*textureLod(s,vec2(c0.x,c0.y),lod)+g1.x*textureLod(s,vec2(c1.x,c0.y),lod))+g1.y*(g0.x*textureLod(s,vec2(c0.x,c1.y),lod)+g1.x*textureLod(s,vec2(c1.x,c1.y),lod));
 }
 // cloud water (g/kg) at p: a cubic B-spline across columns and across layers (layer middles at
-// CY0+CLH*(k+0.5)); under the lowest layer's middle it thins to nothing at sea level, over the top
+// CY0+CLH*(k+0.5)); under the lowest layer's middle it thins to nothing at CY0, over the top
 // layer's middle to nothing at the top of the model. lod blurs it for samples that stand for a
 // long stretch of ray.
 float cWaterQ(vec3 p, float lod, bool fine){
@@ -197,7 +201,7 @@ float cWaterQ(vec3 p, float lod, bool fine){
   float zc=clamp(z,0.0,7.0); int k=int(min(floor(zc),6.0)); float f=zc-float(k), f2=f*f, f3=f2*f;
   // L[k+1] is layer k: the four layers around z
   float w=L[k]*(1.0-3.0*f+3.0*f2-f3)/6.0+L[k+1]*(4.0-6.0*f2+3.0*f3)/6.0+L[k+2]*(1.0+3.0*f+3.0*f2-3.0*f3)/6.0+L[k+3]*f3/6.0;
-  if(z<0.0) w*=(z+0.5)*2.0; // ramps from 0 at sea level to the layer's value at its middle
+  if(z<0.0) w*=(z+0.5)*2.0; // ramps from 0 at CY0 to the layer's value at its middle
   if(z>7.0) w*=1.0-(z-7.0)*2.0;
   return max(w,0.0)*cvEdge(uv);
 }
