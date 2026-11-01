@@ -348,6 +348,7 @@ void main(){
   //  B: relative humidity near the ground, low and middle cloud, high cloud, convection
   //  C: rain, surface pressure (hPa departure), surface air temperature, soil moisture
   const FS_PACK = COMMON + `
+uniform float uCThr;
 uniform vec2 uO; uniform vec2 uStepS; // origin (planet cells) and planet cells per output texel
 layout(location=0) out vec4 o0; layout(location=1) out vec4 o1; layout(location=2) out vec4 o2;
 void main(){
@@ -359,7 +360,7 @@ void main(){
   // col: how much of the sky the cloud hides, as the sky draws it (each layer is 250 blocks deep at
   // 0.05 per block per g/kg), on the old 0..0.5 scale; hi: the thickest high cloud
   float tau=0.0, hi=0.0;
-  for(int m=0;m<K;m++){ float cm=S2(i,j,m).r; tau+=max(cm-0.12,0.0); if(m>=K-3) hi=max(hi,cm); }
+  for(int m=0;m<K;m++){ float cm=S2(i,j,m).r; tau+=max(cm-uCThr,0.0); if(m>=K-3) hi=max(hi,cm); }
   float col=0.5*(1.0-exp(-12.5*tau));
   vec4 sf=SF(i,j);
   float cl=clamp(col*2.0,0.0,1.0);
@@ -424,7 +425,7 @@ void main(){
   const api = {
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
-    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15,
+    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
@@ -436,7 +437,7 @@ void main(){
     const f = (n, v) => { if (p.u[n] !== undefined) gl.uniform1f(p.u[n], v); };
     f('uTod', api.tod); f('uPlayerX', api.playerX / 16 * SC); f('uPlayerN', api.playerZ / 16 < PHc / 2 ? 1 : -1);
     f('uSeason', api.season); f('uTempOff', api.temp); f('uHumid', api.humid); f('uStorm', api.stormMul);
-    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto);
+    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr);
   }
   // save and restore the GL state this module touches, so the renderer is never disturbed
   function withGL(fn) {

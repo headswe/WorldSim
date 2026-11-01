@@ -354,6 +354,19 @@ body.flying #touchui #t-down { display: block; }
           <div class="row"><label for="envRain">Rain <output id="envRain-v"></output></label><input id="envRain" type="range" min="0" max="3" step="0.1"></div>
           <div class="row"><label for="envFog">Haze <output id="envFog-v"></output></label><input id="envFog" type="range" min="0" max="4" step="0.1"></div>
           <div class="seedrow"><button id="env-reset" type="button">Back to the planet's own climate</button></div>
+          <div class="label">Simulation</div>
+          <div class="row"><label for="sim-cthr">Cloud drawn above <output id="sim-cthr-v"></output></label><input id="sim-cthr" type="range" min="0" max="0.4" step="0.01"></div>
+          <div class="row"><label for="sim-rain0">Rain shown above <output id="sim-rain0-v"></output></label><input id="sim-rain0" type="range" min="0" max="0.06" step="0.001"></div>
+          <div class="row"><label for="sim-evap">Evaporation <output id="sim-evap-v"></output></label><input id="sim-evap" type="range" min="0.1" max="2" step="0.05"></div>
+          <div class="row"><label for="sim-revap">Rain evaporating as it falls <output id="sim-revap-v"></output></label><input id="sim-revap" type="range" min="0" max="0.5" step="0.01"></div>
+          <div class="row"><label for="sim-auto">Cloud rains out <output id="sim-auto-v"></output></label><input id="sim-auto" type="range" min="0.03" max="0.6" step="0.01"></div>
+          <div class="row"><label for="sim-conv">Convection time <output id="sim-conv-v"></output></label><input id="sim-conv" type="range" min="10" max="200" step="5"></div>
+          <div class="row"><label for="sim-rad">Radiation time <output id="sim-rad-v"></output></label><input id="sim-rad" type="range" min="100" max="1500" step="20"></div>
+          <div class="row"><label for="sim-divD">Wave damping <output id="sim-divD-v"></output></label><input id="sim-divD" type="range" min="0.5" max="5" step="0.1"></div>
+          <div class="row"><label for="sim-diff">Smoothing <output id="sim-diff-v"></output></label><input id="sim-diff" type="range" min="0" max="0.15" step="0.005"></div>
+          <div class="row"><label for="sim-speed">Weather speed <output id="sim-speed-v"></output></label><input id="sim-speed" type="range" min="0" max="8" step="1"></div>
+          <div class="seedrow"><button id="sim-reset" type="button">Default settings</button><button id="sim-restart" type="button">Restart the weather</button></div>
+          <p class="foot">Cloud and rain thresholds only change what is drawn. The rest change the model; give it a minute, or turn up the speed, to see the effect. Wave damping below about 2 slowly overheats the air.</p>
         </div>
       </section>
 

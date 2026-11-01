@@ -168,7 +168,9 @@ const float CY0=110.0, CLH=45.0, CTOP=CY0+8.0*CLH, CEXT=0.05*250.0/CLH;
 // drawn (what a cell holds beyond it is the part of the cell that is cloud), and only rain above
 // RAIN0 reaches the ground (lighter fall evaporates on the way down). The same cuts feed the HUD,
 // the map and the rain on the player.
-const float CTHR=0.12, RAIN0=0.019;
+uniform float uCThr, uRain0; // CTHR and RAIN0, from the Weather tab
+#define CTHR uCThr
+#define RAIN0 uRain0
 vec2 cvUV(vec2 xz){ return (xz/16.0-uCVO)/uCVN; }
 float cvEdge(vec2 uv){
   if(uCVWrap>0.5) return 1.0;
@@ -230,13 +232,15 @@ vec3 outHDR(vec3 c){ return max(c,vec3(0.0))*uEnc; }
 const float RAINV=40.0; // veil opacity per block per (g/kg per s) of rain
 float rainVeil(vec3 dir, float dist){
   if(uRainVeil<0.5 || uCloudOn<0.5) return 0.0;
-  float od=0.0, t=110.0;
-  for(int i=0;i<9;i++){
+  // 16 looks spaced 20% apart; the rain fills the air from the ground up to the cloud base and
+  // fades out over the 60 blocks around it (a hard cut there drew the veil as a flat grey sheet)
+  float od=0.0, t=80.0;
+  for(int i=0;i<16;i++){
     if(t>dist) break;
     vec3 p=uCam+dir*t;
-    if(p.y>CY0+CLH*2.0) break;
-    od+=cRain(p.xz,1.5)*min(t*0.35,dist-t)*RAINV;
-    t*=1.35;
+    float hf=1.0-smoothstep(CY0-40.0,CY0+20.0,p.y);
+    if(hf>0.0) od+=cRain(p.xz,clamp(log2(t/64.0),0.0,4.0))*min(t*0.2,dist-t)*RAINV*hf;
+    t*=1.2;
   }
   return 1.0-exp(-od);
 }
