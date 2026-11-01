@@ -234,7 +234,7 @@ void main(){
   // back into the layers and works out the vertical velocity. Done in two halves because WebGL 2
   // only promises four render targets.
   const FS_COL = COMMON + `
-uniform float uConvT, uRevap, uAuto; uniform int uHalf;
+uniform float uConvT, uRevap, uAuto, uConvA; uniform int uHalf;
 layout(location=0) out vec4 o0; layout(location=1) out vec4 o1; layout(location=2) out vec4 o2; layout(location=3) out vec4 o3;
 float gamOf(float T,float qs){ return LC*qs*17.27*237.3/((T+237.3)*(T+237.3)); }
 void main(){
@@ -250,7 +250,10 @@ void main(){
   }
   // moist convection: a parcel from the lowest layer rises as long as it is warmer than the
   // saturated air around it (its equivalent potential temperature beats theirs)
-  float the=th[0]+LC*q[0]+${(opts.cbonus ?? 0.3).toFixed(2)};
+  // the parcel comes from the low air of this column and its neighbours together (uConvA of the way
+  // toward their mean), so storms start over patches of warm moist air, not cell by cell
+  float nbe=0.0; for(int dj=-1;dj<=1;dj++) for(int di=-1;di<=1;di++){ vec4 s0=S1(i+di,j+dj,0); nbe+=s0.z+LC*max(s0.w,0.0); }
+  float the=mix(th[0]+LC*q[0],nbe/9.0,uConvA)+${(opts.cbonus ?? 0.3).toFixed(2)};
   int top=0;
   for(int m=1;m<K;m++){ float thes=th[m]+LC*qsat(tAir(m,th[m]),m); if(the>thes) top=m; else break; }
   float conv=0.0, rainC=0.0;
@@ -436,7 +439,7 @@ void main(){
   const api = {
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
-    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6,
+    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6, convA: 0.7,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
@@ -448,7 +451,7 @@ void main(){
     const f = (n, v) => { if (p.u[n] !== undefined) gl.uniform1f(p.u[n], v); };
     f('uTod', api.tod); f('uPlayerX', api.playerX / 16 * SC); f('uPlayerN', api.playerZ / 16 < PHc / 2 ? 1 : -1);
     f('uSeason', api.season); f('uTempOff', api.temp); f('uHumid', api.humid); f('uStorm', api.stormMul);
-    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro);
+    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro); f('uConvA', api.convA);
   }
   // save and restore the GL state this module touches, so the renderer is never disturbed
   function withGL(fn) {
