@@ -449,7 +449,7 @@ void main(){
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
     rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6, convA: 0.7, f0: opts.f0 || 0.34, daySw: 8,
-    pol: 84, frH: 0.25, cEvap: 1, cb: 0.1, mem: 0.6, tower: 0.15,
+    seaIce: 1, pol: 84, frH: 0.25, cEvap: 1, cb: 0.1, mem: 0.6, tower: 0.15,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
@@ -538,10 +538,13 @@ void main(){
     const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
     for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
       const pi = Math.floor(i / SC), pj = Math.floor(j / SC), k = pj * PWc + pi, n = (j * NX + i) * 4;
-      const sea = pl.L.elev[k] <= 0 || pl.ys[k] < 30;
-      const h = Math.max(0, pl.ys[k] - 30);
-      g[n] = h; g[n + 1] = sea ? 1 : 0; g[n + 2] = pl.tmp[k]; g[n + 3] = pl.L.moist ? Math.min(1, pl.L.moist[k]) : Math.min(1, pl.L.rain[k] / 2);
       const sst = pl.L.sst ? pl.L.sst[k] : pl.tmp[k];
+      // frozen sea (the planet keeps it at -1.8 °C) is sea ice: a cold, dry, flat surface at the
+      // planet's own air temperature, not open water that warms and moistens the polar air
+      const ice = api.seaIce && sst < -1.0;
+      const sea = !ice && (pl.L.elev[k] <= 0 || pl.ys[k] < 30);
+      const h = Math.max(0, pl.ys[k] - 30);
+      g[n] = h; g[n + 1] = sea ? 1 : 0; g[n + 2] = pl.tmp[k]; g[n + 3] = ice ? 0.1 : pl.L.moist ? Math.min(1, pl.L.moist[k]) : Math.min(1, pl.L.rain[k] / 2);
       g2[n] = sea ? sst : 0; g2[n + 1] = pl.L.tAmp ? pl.L.tAmp[k] : 8 * Math.min(1, Math.abs(90 - (pj + 0.5) / PHc * 180) / 50);
       // roughness: ground that rises and falls a lot around here
       let rgh = 0;

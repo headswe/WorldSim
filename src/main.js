@@ -29,7 +29,7 @@ const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 // the global weather simulation's own knobs (Weather tab, "Simulation"): what is drawn as cloud and
 // rain, and the physics constants of the model itself
-const SIM_DEFAULTS = { landW: 0.8, oro: 6, convA: 0.7, f0: 0.34, daySw: 8, cthr: 0.12, rain0: 0.019, evap: 0.5, revap: 0.1, auto: 0.15, conv: 40, rad: 420, divD: 2.4, diff: 0.04, pol: 84, frH: 0.25, cEvap: 1, cb: 0.1, mem: 0.6, tower: 0.15, speed: 1 };
+const SIM_DEFAULTS = { landW: 0.8, oro: 6, convA: 0.7, f0: 0.34, daySw: 8, cthr: 0.12, rain0: 0.019, evap: 0.5, revap: 0.1, auto: 0.15, conv: 40, rad: 420, divD: 2.4, diff: 0.04, seaIce: 1, pol: 84, frH: 0.25, cEvap: 1, cb: 0.1, mem: 0.6, tower: 0.15, speed: 1 };
 const settings = { sim: { ...SIM_DEFAULTS }, rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, volume: 0.7, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
 try {
   const saved = JSON.parse(localStorage.getItem('emberwood.settings') || '{}');
@@ -1802,6 +1802,7 @@ const SIM_UI = [
   ['sim-cb', 'cb', v => v <= 0 ? `${v.toFixed(1)} °C · strong lid` : `+${v.toFixed(1)} °C`],
   ['sim-tower', 'tower', v => v === 0 ? 'anvil only' : `${Math.round(v * 100)}% stays as cloud`],
   ['sim-cEvap', 'cEvap', v => `${Math.round(v * 100)}% per step`],
+  ['sim-seaIce', 'seaIce', v => v ? 'cold, dry ice (restart to apply)' : 'open water at -1.8 °C (restart to apply)'],
   ['sim-frH', 'frH', v => v === 0 ? 'roughness only' : `${Math.round(v * 100)}%`],
   ['sim-pol', 'pol', v => `from ${v}°`],
   ['sim-cthr', 'cthr', v => `${v.toFixed(2)} g/kg`],
@@ -1823,7 +1824,7 @@ for (const [id, key, fmt] of SIM_UI) {
 }
 syncSimUI();
 $('sim-reset').addEventListener('click', () => { settings.sim = { ...SIM_DEFAULTS }; syncSimUI(); saveSettings(); });
-$('sim-restart').addEventListener('click', () => { if (atmos && planet) { atmos.reset(planet); atm.spun = 0; } });
+$('sim-restart').addEventListener('click', () => { if (atmos && planet) { atmos.seaIce = settings.sim.seaIce; atmos.reset(planet); atm.spun = 0; } });
 const shadowsEl = $('shadows');
 shadowsEl.checked = settings.shadows;
 shadowsEl.addEventListener('change', () => { settings.shadows = shadowsEl.checked; saveSettings(); });
@@ -2122,7 +2123,7 @@ function frameBody(now) {
   simStep(dt);
   if (planet && !weather.ready && state.spawned) {
     weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
-    if (atmos) { try { atmos.reset(planet); atm.spun = 0; } catch (e) { console.warn('global weather off:', e); atmos = null; } }
+    if (atmos) { try { atmos.seaIce = settings.sim.seaIce; atmos.reset(planet); atm.spun = 0; } catch (e) { console.warn('global weather off:', e); atmos = null; } }
     weather.atmos = null;
   }
   atmosStep(dt);
