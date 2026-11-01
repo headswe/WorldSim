@@ -76,12 +76,13 @@ const float BETA=${(opts.beta || 0.06).toFixed(4)};      // buoyancy per °C of 
 const float SREF=5.0;       // reference stratification: potential temperature rise per layer
 const float GEX=1.0, HEX=4.0; // surface pressure: gravity and depth of the barotropic mode
 const float LC=2.5;         // latent heat: °C of warming per g/kg condensed
-const float F0=${(opts.f0 || 0.34).toFixed(5)};  // Coriolis parameter at the pole (per second; the grid sets the size of weather systems)
+uniform float uF0;            // Coriolis parameter at the pole (per second): sets the size of the weather systems
+#define F0 uF0
 uniform float uTod;         // time of day at the player, hours
 uniform float uPlayerX;     // player's longitude as a grid x
 uniform float uSeason;      // -1 winter .. 1 summer in the player's hemisphere
 uniform float uPlayerN;     // 1 if the player is in the northern hemisphere, -1 south
-uniform float uTempOff, uHumid, uStorm, uLandW;
+uniform float uTempOff, uHumid, uStorm, uLandW, uDaySw;
 ivec2 at(int i,int j,int k){ i=((i%NX)+NX)%NX; j=clamp(j,0,NY-1); return ivec2(i,j+k*NY); }
 vec4 S1(int i,int j,int k){ return texelFetch(uS1,at(i,j,k),0); }
 vec4 S2(int i,int j,int k){ return texelFetch(uS2,at(i,j,k),0); }
@@ -110,7 +111,7 @@ float surfT(int i,int j,float cloud){
   float s=seasonSign(j);
   if(g.g>0.5) return g2.r+0.45*g2.g*s+uTempOff;
   float lt=uTod+(float(i)-uPlayerX)/float(NX)*24.0;
-  float day=cos(6.2831853*(lt-15.0)/24.0)*5.0*(1.0-0.6*cloud);
+  float day=cos(6.2831853*(lt-15.0)/24.0)*uDaySw*(1.0-0.6*cloud);
   return g.b+g2.g*s+day+uTempOff;
 }
 // sunshine on the ground at column (i,j): 0 at night .. 1 at noon
@@ -253,7 +254,7 @@ void main(){
   // the parcel comes from the low air of this column and its neighbours together (uConvA of the way
   // toward their mean), so storms start over patches of warm moist air, not cell by cell
   float nbe=0.0; for(int dj=-1;dj<=1;dj++) for(int di=-1;di<=1;di++){ vec4 s0=S1(i+di,j+dj,0); nbe+=s0.z+LC*max(s0.w,0.0); }
-  float the=mix(th[0]+LC*q[0],nbe/9.0,uConvA)+${(opts.cbonus ?? 0.3).toFixed(2)};
+  float the=mix(th[0]+LC*q[0],nbe/9.0,uConvA)+${(opts.cbonus ?? 0.3).toFixed(2)}+0.8*(uStorm-1.0);
   int top=0;
   for(int m=1;m<K;m++){ float thes=th[m]+LC*qsat(tAir(m,th[m]),m); if(the>thes) top=m; else break; }
   float conv=0.0, rainC=0.0;
@@ -293,8 +294,6 @@ void main(){
     float e=min(F,F*clamp((0.95-rh)*0.5,0.0,0.5)+uRevap*max(0.0,0.95*qsat(T,m)-q[m]));
     F-=e; q[m]+=e; th[m]-=LC*e;
   }
-  // the stratosphere is dry: what little vapour and cloud reaches the top layer is slowly lost
-  q[K-1]*=1.0-DT*0.01; c[K-1]*=1.0-DT*0.02;
   // the stratosphere is dry: what little vapour and cloud reaches the top layer is slowly lost
   q[K-1]*=1.0-DT*0.01; c[K-1]*=1.0-DT*0.02;
   // dry convective mixing: a layer warmer (in potential temperature) than the one above it overturns
@@ -439,7 +438,7 @@ void main(){
   const api = {
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
-    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6, convA: 0.7,
+    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6, convA: 0.7, f0: opts.f0 || 0.34, daySw: 8,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
@@ -451,7 +450,7 @@ void main(){
     const f = (n, v) => { if (p.u[n] !== undefined) gl.uniform1f(p.u[n], v); };
     f('uTod', api.tod); f('uPlayerX', api.playerX / 16 * SC); f('uPlayerN', api.playerZ / 16 < PHc / 2 ? 1 : -1);
     f('uSeason', api.season); f('uTempOff', api.temp); f('uHumid', api.humid); f('uStorm', api.stormMul);
-    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro); f('uConvA', api.convA);
+    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro); f('uConvA', api.convA); f('uF0', api.f0); f('uDaySw', api.daySw);
   }
   // save and restore the GL state this module touches, so the renderer is never disturbed
   function withGL(fn) {
