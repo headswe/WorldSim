@@ -29,7 +29,7 @@ const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
 // the global weather simulation's own knobs (Weather tab, "Simulation"): what is drawn as cloud and
 // rain, and the physics constants of the model itself
-const SIM_DEFAULTS = { cthr: 0.12, rain0: 0.019, evap: 0.5, revap: 0.1, auto: 0.15, conv: 40, rad: 420, divD: 2.4, diff: 0.04, speed: 1 };
+const SIM_DEFAULTS = { landW: 0.8, oro: 6, cthr: 0.12, rain0: 0.019, evap: 0.5, revap: 0.1, auto: 0.15, conv: 40, rad: 420, divD: 2.4, diff: 0.04, speed: 1 };
 const settings = { sim: { ...SIM_DEFAULTS }, rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, volume: 0.7, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
 try {
   const saved = JSON.parse(localStorage.getItem('emberwood.settings') || '{}');
@@ -248,7 +248,7 @@ function atmosStep(dt) {
   atmos.tod = settings.tod; atmos.playerX = state.pos[0]; atmos.playerZ = state.pos[2];
   atmos.season = [0, 1, 0, -1][settings.season] || 0; atmos.temp = settings.envTemp; atmos.humid = settings.envHumid; atmos.stormMul = settings.envStorms;
   const sm = settings.sim;
-  atmos.cthr = sm.cthr; atmos.evap = sm.evap; atmos.revap = sm.revap; atmos.auto = sm.auto; atmos.conv = sm.conv; atmos.rad = sm.rad; atmos.divD = sm.divD; atmos.diff = sm.diff;
+  atmos.landW = sm.landW; atmos.oro = sm.oro; atmos.cthr = sm.cthr; atmos.evap = sm.evap; atmos.revap = sm.revap; atmos.auto = sm.auto; atmos.conv = sm.conv; atmos.rad = sm.rad; atmos.divD = sm.divD; atmos.diff = sm.diff;
   weather.atmosGain.rain0 = sm.rain0;
   if (atm.spun < atm.SPIN) {
     const n = Math.min(atm.SPIN - atm.spun, PHONE_WX ? 3 : 10);
@@ -1793,6 +1793,8 @@ function syncEnvUI() { for (const id of ENV_IDS) { const el = $(id); el.value = 
 $('env-reset').addEventListener('click', () => { Object.assign(settings, ENV_DEFAULTS, { wind: 1 }); syncEnvUI(); });
 // simulation knobs: each slider writes settings.sim[key]; atmosStep hands them to the model every frame
 const SIM_UI = [
+  ['sim-landW', 'landW', v => v === 0 ? 'latitude bands only' : `${Math.round(v * 100)}% from the ground below`],
+  ['sim-oro', 'oro', v => v === 0 ? 'off' : `${v}×`],
   ['sim-cthr', 'cthr', v => `${v.toFixed(2)} g/kg`],
   ['sim-rain0', 'rain0', v => v.toFixed(3)],
   ['sim-evap', 'evap', v => `${v.toFixed(2)}×`],

@@ -68,7 +68,7 @@ function createAtmosphere(gl, opts = {}) {
   // ---- shared GLSL ----
   const COMMON = `#version 300 es
 precision highp float; precision highp int;
-uniform highp sampler2D uS1, uS2, uSurf, uGeo, uGeo2, uD;
+uniform highp sampler2D uS1, uS2, uSurf, uGeo, uGeo2, uGeo3, uD;
 const int NX=${NX}, NY=${NY}, K=${K};
 const float DT=${DT.toFixed(3)};
 // physics constants (model units: cells, game seconds, °C, g/kg)
@@ -81,7 +81,7 @@ uniform float uTod;         // time of day at the player, hours
 uniform float uPlayerX;     // player's longitude as a grid x
 uniform float uSeason;      // -1 winter .. 1 summer in the player's hemisphere
 uniform float uPlayerN;     // 1 if the player is in the northern hemisphere, -1 south
-uniform float uTempOff, uHumid, uStorm;
+uniform float uTempOff, uHumid, uStorm, uLandW;
 ivec2 at(int i,int j,int k){ i=((i%NX)+NX)%NX; j=clamp(j,0,NY-1); return ivec2(i,j+k*NY); }
 vec4 S1(int i,int j,int k){ return texelFetch(uS1,at(i,j,k),0); }
 vec4 S2(int i,int j,int k){ return texelFetch(uS2,at(i,j,k),0); }
@@ -89,6 +89,9 @@ vec4 DG(int i,int j,int k){ return texelFetch(uD,at(i,j,k),0); }
 vec4 SF(int i,int j){ i=((i%NX)+NX)%NX; j=clamp(j,0,NY-1); return texelFetch(uSurf,ivec2(i,j),0); }
 vec4 GEO(int i,int j){ i=((i%NX)+NX)%NX; j=clamp(j,0,NY-1); return texelFetch(uGeo,ivec2(i,j),0); }
 vec4 GEO2(int i,int j){ i=((i%NX)+NX)%NX; j=clamp(j,0,NY-1); return texelFetch(uGeo2,ivec2(i,j),0); }
+// GEO3: the surface smoothed over about 150 km: r land fraction, g yearly mean surface temperature
+// (sea surface over the sea), b half the yearly swing (°C)
+vec4 GEO3(int i,int j){ i=((i%NX)+NX)%NX; j=clamp(j,0,NY-1); return texelFetch(uGeo3,ivec2(i,j),0); }
 float latOf(int j){ return 90.0-(float(j)+0.5)/float(NY)*180.0; }
 float corio(int j){ return F0*sin(radians(latOf(j))); }
 // reference potential temperature of layer k (°C) and the height of its middle (km)
@@ -115,10 +118,16 @@ float sunOn(int i){ float lt=mod(uTod+(float(i)-uPlayerX)/float(NX)*24.0+48.0,24
 // radiative-equilibrium potential temperature anomaly of layer k at row j: the sun heats the
 // tropics more than the poles and the ground more than the air aloft; above the tropopause the
 // air is warm (stratosphere), which caps convection
-float thEq(int j,int k){
+float thEq(int i,int j,int k){
   float s=abs(sin(radians(latOf(j))));
   float sh=seasonSign(j)*6.0*s;
-  float ts=28.0-40.0*pow(s,2.5)+sh+uTempOff;
+  float zon=28.0-40.0*pow(s,2.5)+sh;
+  // the ground under the column sets how warm it would be: continents run hot in summer and cold
+  // in winter, the sea stays mild (its own currents included). uLandW blends this local surface
+  // with the zonal band (0 = bands only, as before)
+  vec4 g3=GEO3(i,j);
+  float loc=g3.g+g3.b*seasonSign(j);
+  float ts=mix(zon,loc,uLandW)+uTempOff;
   float a=(ts-17.5)*(1.0-0.35*float(k)/float(K));
   float trop=float(K)-2.0-1.2*s;
   a+=max(0.0,float(k)-trop)*7.0;
@@ -189,7 +198,7 @@ void main(){
   if(j==0||j==NY-1) v.y=0.0;
   float th=a.z, q=max(a.w,0.0);
   // radiation
-  th+=(thEq(j,k)-th)*DT/uRad;
+  th+=(thEq(i,j,k)-th)*DT/uRad;
   if(k==0){
     // the ground: sensible heat and evaporation into the lowest layer
     float col=0.0; for(int m=0;m<K;m++) col=max(col,S2(i,j,m).r);
@@ -295,6 +304,7 @@ void main(){
 }`;
   const FS_SCAT = COMMON + FRAG_IJK + `
 uniform highp sampler2D uC0, uC1, uC2, uC3, uC4, uC5, uC6;
+uniform float uOro;
 float pick(vec4 a,vec4 b,int k){ vec4 v=k<4 ? a : b; int m=k<4 ? k : k-4; return m==0 ? v.x : m==1 ? v.y : m==2 ? v.z : v.w; }
 void main(){
   int i,j,k; ijk(i,j,k);
@@ -309,7 +319,8 @@ void main(){
   dmean/=float(K);
   vec2 u0=S1(i,j,0).xy;
   float hx=(GEO(i+1,j).r-GEO(i-1,j).r)*0.5, hy=(GEO(i,j+1).r-GEO(i,j-1).r)*0.5;
-  float ws=(u0.x*hx+u0.y*hy)*0.004*${SC.toFixed(1)};
+  // uOro scales it: 1 is the old, barely noticeable lift; real ranges wring out far more rain
+  float ws=(u0.x*hx+u0.y*hy)*0.004*uOro*${SC.toFixed(1)};
   float wtop=k==K-1 ? 0.0 : ws*(1.0-float(k+1)/float(K))-(dsum-dmean*float(k+1));
   // and at its bottom (the top of the layer below)
   float wbot=0.0;
@@ -398,7 +409,7 @@ void main(){
   const F12 = [fbo([S1[0], S2[0]]), fbo([S1[1], S2[1]])], FS = [fbo([SURF[0]]), fbo([SURF[1]])];
   if (!F12[0] || !FS[0] || !FD || !FC[0] || !FC[1]) return null;
   let cur = 0, scur = 0;
-  let geo = null, geo2 = null;
+  let geo = null, geo2 = null, geo3 = null;
   const vao = gl.createVertexArray();
 
   // packed views and their asynchronous readback
@@ -425,19 +436,19 @@ void main(){
   const api = {
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
-    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12,
+    rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
 
   function bindCommon(p) {
     gl.useProgram(p.p);
-    const T = [['uS1', S1[cur]], ['uS2', S2[cur]], ['uSurf', SURF[scur]], ['uGeo', geo], ['uGeo2', geo2], ['uD', DGT], ...CT.map((t, n) => ['uC' + n, t])];
+    const T = [['uS1', S1[cur]], ['uS2', S2[cur]], ['uSurf', SURF[scur]], ['uGeo', geo], ['uGeo2', geo2], ['uGeo3', geo3], ['uD', DGT], ...CT.map((t, n) => ['uC' + n, t])];
     T.forEach(([n, t], idx) => { if (p.u[n] !== undefined) { gl.activeTexture(gl.TEXTURE0 + 12 + idx); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(p.u[n], 12 + idx); } });
     const f = (n, v) => { if (p.u[n] !== undefined) gl.uniform1f(p.u[n], v); };
     f('uTod', api.tod); f('uPlayerX', api.playerX / 16 * SC); f('uPlayerN', api.playerZ / 16 < PHc / 2 ? 1 : -1);
     f('uSeason', api.season); f('uTempOff', api.temp); f('uHumid', api.humid); f('uStorm', api.stormMul);
-    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr);
+    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro);
   }
   // save and restore the GL state this module touches, so the renderer is never disturbed
   function withGL(fn) {
@@ -536,8 +547,24 @@ void main(){
         s1[m + 3] = (opts.q0 ?? 0.6) * 3.8 * Math.exp(17.27 * T / (T + 237.3)) * Math.exp((kk + 0.5) * 1.5 / 8);
       }
     }
+    // the surface smoothed (two box blurs ~4 cells each way, wrapping east-west) for the radiation
+    const g3 = new Float32Array(NX * NY * 4);
+    {
+      const ch = [new Float32Array(NX * NY), new Float32Array(NX * NY), new Float32Array(NX * NY)];
+      for (let n = 0; n < NX * NY; n++) {
+        const sea = g[n * 4 + 1] > 0.5;
+        ch[0][n] = sea ? 0 : 1; ch[1][n] = sea ? g2[n * 4] : g[n * 4 + 2]; ch[2][n] = g2[n * 4 + 1] * (sea ? 0.45 : 1);
+      }
+      const R = Math.max(2, Math.round(4 * NX / 512)), tmp = new Float32Array(NX * NY);
+      for (const a of ch) for (let pass = 0; pass < 2; pass++) {
+        for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) { let t = 0; for (let d = -R; d <= R; d++) t += a[j * NX + ((i + d + NX) % NX)]; tmp[j * NX + i] = t / (2 * R + 1); }
+        for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) { let t = 0; for (let d = -R; d <= R; d++) t += tmp[Math.max(0, Math.min(NY - 1, j + d)) * NX + i]; a[j * NX + i] = t / (2 * R + 1); }
+      }
+      for (let n = 0; n < NX * NY; n++) { g3[n * 4] = ch[0][n]; g3[n * 4 + 1] = ch[1][n]; g3[n * 4 + 2] = ch[2][n]; g3[n * 4 + 3] = 1; }
+    }
     gl.bindTexture(gl.TEXTURE_2D, null);
-    geo = geo || tex(NX, NY); geo2 = geo2 || tex(NX, NY);
+    geo = geo || tex(NX, NY); geo2 = geo2 || tex(NX, NY); geo3 = geo3 || tex(NX, NY);
+    gl.bindTexture(gl.TEXTURE_2D, geo3); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NX, NY, gl.RGBA, gl.FLOAT, g3);
     gl.bindTexture(gl.TEXTURE_2D, geo); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NX, NY, gl.RGBA, gl.FLOAT, g);
     gl.bindTexture(gl.TEXTURE_2D, geo2); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NX, NY, gl.RGBA, gl.FLOAT, g2);
     for (const t of S1) { gl.bindTexture(gl.TEXTURE_2D, t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, AW, AH, gl.RGBA, gl.FLOAT, s1); }
