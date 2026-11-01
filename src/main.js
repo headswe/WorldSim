@@ -231,7 +231,10 @@ const weather = createWeather(gl);
 // float render targets; without them (or if it fails to start) the local sim's own scripted
 // large-scale weather is used instead.
 let atmos = null;
-try { if (post.hasFloat && !/cpuwx/.test(location.hash)) { const nx = +((location.hash.match(/wxnx=(\d+)/) || [])[1] || 512); atmos = createAtmosphere(gl, { nx, ny: nx / 2 }); } } catch (e) { console.warn('global weather off:', e); atmos = null; }
+// phones get a quarter of the weather grid (32-block cells) and a gentler spin-up: a full 512 grid
+// stepped ten times a frame can stall a phone GPU long enough for the browser to drop the page
+const PHONE_WX = matchMedia('(pointer: coarse)').matches;
+try { if (post.hasFloat && !/cpuwx/.test(location.hash)) { const nx = +((location.hash.match(/wxnx=(\d+)/) || [])[1] || (PHONE_WX ? 256 : 512)); atmos = createAtmosphere(gl, { nx, ny: nx / 2 }); } } catch (e) { console.warn('global weather off:', e); atmos = null; }
 const atm = { spun: 0, acc: 0, winT: 0, globT: 0, SPIN: +((location.hash.match(/wxspin=(\d+)/) || [])[1] || 1600) };
 // step the global atmosphere in time with the game (one step per quarter second of game time),
 // spin it up from rest over the first frames after the planet arrives, and keep its packed views
@@ -241,7 +244,7 @@ function atmosStep(dt) {
   atmos.tod = settings.tod; atmos.playerX = state.pos[0]; atmos.playerZ = state.pos[2];
   atmos.season = [0, 1, 0, -1][settings.season] || 0; atmos.temp = settings.envTemp; atmos.humid = settings.envHumid; atmos.stormMul = settings.envStorms;
   if (atm.spun < atm.SPIN) {
-    const n = Math.min(atm.SPIN - atm.spun, 10);
+    const n = Math.min(atm.SPIN - atm.spun, PHONE_WX ? 3 : 10);
     atmos.run(n); atm.spun += n;
   } else {
     atm.acc += dt;
