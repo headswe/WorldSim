@@ -158,29 +158,60 @@ vec3 skyCol(vec3 d){
 // wraps), 0 for the local window of the fallback sim, which fades out at its edges. Nothing is
 // added to these fields: a cloud is drawn where the model holds cloud water, as dense as it holds.
 uniform sampler2D uCV0, uCV1, uCV2; uniform vec2 uCVO, uCVN; uniform float uCVWrap; uniform float uCloudOn;
-// the layers stacked on sea level, CLH blocks each; CEXT: extinction per block per g/kg
-const float CY0=30.0, CLH=250.0, CTOP=CY0+8.0*CLH, CEXT=0.05;
+// the layers stacked from CY0, CLH blocks each; CEXT: extinction per block per g/kg. The model's
+// columns are 16 blocks wide, so its weather systems are only a few hundred blocks across: the
+// layers are squashed to the same proportions (a deck of cloud flatter than it is wide, as on
+// Earth), or every cloud would stand as a pillar or a wall 2,000 blocks tall. Each layer keeps the
+// optical depth it had at 250 blocks.
+const float CY0=110.0, CLH=45.0, CTOP=CY0+8.0*CLH, CEXT=0.05*250.0/CLH;
+// the sim keeps most of the air saturated with thin cloud; only water above CTHR g/kg in a layer is
+// drawn (what a cell holds beyond it is the part of the cell that is cloud), and only rain above
+// RAIN0 reaches the ground (lighter fall evaporates on the way down). The same cuts feed the HUD,
+// the map and the rain on the player.
+uniform float uCThr, uRain0; // CTHR and RAIN0, from the Weather tab
+#define CTHR uCThr
+#define RAIN0 uRain0
 vec2 cvUV(vec2 xz){ return (xz/16.0-uCVO)/uCVN; }
 float cvEdge(vec2 uv){
   if(uCVWrap>0.5) return 1.0;
   return smoothstep(0.0,0.1,uv.x)*smoothstep(1.0,0.9,uv.x)*smoothstep(0.0,0.1,uv.y)*smoothstep(1.0,0.9,uv.y);
 }
-// cloud water (g/kg) at p: bilinear between columns, linear between layer middles; under the
-// middle of the lowest layer it thins to nothing at sea level, over the top layer's middle to
-// nothing at the top of the model. lod blurs it for samples that stand for a long stretch of ray.
-float cWater(vec3 p, float lod){
+// cubic B-spline over the texels of a mip level, from four bilinear taps: the model's columns
+// are cells, and a dense cell read with plain bilinear filtering shows its edges as straight
+// walls; the spline rounds them while keeping each cell's water where the model put it
+vec4 cvBsp(sampler2D s, vec2 uv, float lod){
+  vec2 sz=vec2(textureSize(s,int(lod+0.5)));
+  vec2 p=uv*sz-0.5, i=floor(p), f=p-i, f2=f*f, f3=f2*f;
+  vec2 w0=(1.0-3.0*f+3.0*f2-f3)/6.0, w1=(4.0-6.0*f2+3.0*f3)/6.0, w2=(1.0+3.0*f+3.0*f2-3.0*f3)/6.0, w3=f3/6.0;
+  vec2 g0=w0+w1, g1=w2+w3;
+  vec2 c0=(i-0.5+w1/g0)/sz, c1=(i+1.5+w3/g1)/sz;
+  return g0.y*(g0.x*textureLod(s,vec2(c0.x,c0.y),lod)+g1.x*textureLod(s,vec2(c1.x,c0.y),lod))+g1.y*(g0.x*textureLod(s,vec2(c0.x,c1.y),lod)+g1.x*textureLod(s,vec2(c1.x,c1.y),lod));
+}
+// cloud water (g/kg) at p: a cubic B-spline across columns and across layers (layer middles at
+// CY0+CLH*(k+0.5)); under the lowest layer's middle it thins to nothing at CY0, over the top
+// layer's middle to nothing at the top of the model. lod blurs it for samples that stand for a
+// long stretch of ray.
+float cWaterQ(vec3 p, float lod, bool fine){
   float z=(p.y-CY0)/CLH-0.5;
   if(z<-0.5 || z>7.5) return 0.0;
   vec2 uv=cvUV(p.xz);
-  vec4 a=textureLod(uCV0,uv,lod), b=textureLod(uCV1,uv,lod);
-  float L[8]=float[8](a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w);
-  float zc=clamp(z,0.0,7.0); int k0=int(min(floor(zc),6.0)); float f=zc-float(k0);
-  float w=mix(L[k0],L[k0+1],f);
-  if(z<0.0) w*=(z+0.5)*2.0; // ramps from 0 at sea level to the layer's value at its middle
+  vec4 a,b;
+  if(fine && lod<2.5){ a=cvBsp(uCV0,uv,lod); b=cvBsp(uCV1,uv,lod); }
+  else { a=textureLod(uCV0,uv,lod); b=textureLod(uCV1,uv,lod); }
+  float L[10]=float[10](a.x,a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w,b.w);
+  float zc=clamp(z,0.0,7.0); int k=int(min(floor(zc),6.0)); float f=zc-float(k), f2=f*f, f3=f2*f;
+  // L[k+1] is layer k: the four layers around z
+  float w=L[k]*(1.0-3.0*f+3.0*f2-f3)/6.0+L[k+1]*(4.0-6.0*f2+3.0*f3)/6.0+L[k+2]*(1.0+3.0*f+3.0*f2-3.0*f3)/6.0+L[k+3]*f3/6.0;
+  if(z<0.0) w*=(z+0.5)*2.0; // ramps from 0 at CY0 to the layer's value at its middle
   if(z>7.0) w*=1.0-(z-7.0)*2.0;
-  return max(w,0.0)*cvEdge(uv);
+  // the cut comes after the spline joins the layers, so one cloud spread over several layers
+  // draws as one body instead of a stack of sheets with gaps between them
+  return max(w-CTHR,0.0)*cvEdge(uv);
 }
-float cRain(vec2 xz, float lod){ vec2 uv=cvUV(xz); return max(textureLod(uCV2,uv,lod).r,0.0)*cvEdge(uv); }
+// the cloud body as drawn, and a cheaper bilinear read for light and shadow (blurred anyway)
+float cWater(vec3 p, float lod){ return cWaterQ(p,lod,true); }
+float cWaterL(vec3 p, float lod){ return cWaterQ(p,lod,false); }
+float cRain(vec2 xz, float lod){ vec2 uv=cvUV(xz); return max(textureLod(uCV2,uv,lod).r-RAIN0,0.0)*1.6*cvEdge(uv); }
 // how much sunlight reaches p past the clouds: the cloud water along the sun ray, four looks
 // from p (or the bottom of the model) to its top
 float cloudShade(vec3 p){
@@ -188,7 +219,7 @@ float cloudShade(vec3 p){
   float sy=max(uSunDir.y,0.12), y0=max(p.y,CY0), od=0.0;
   for(int k=0;k<4;k++){
     float y=mix(y0,CTOP,(float(k)+0.5)/4.0);
-    od+=cWater(p+uSunDir*(y-p.y)/sy,1.0);
+    od+=cWaterL(p+uSunDir*(y-p.y)/sy,1.0);
   }
   od*=(CTOP-y0)/4.0/sy*CEXT;
   // forward scattering lets a lot of light through, so shadows are softer than the cloud is opaque
@@ -202,13 +233,15 @@ vec3 outHDR(vec3 c){ return max(c,vec3(0.0))*uEnc; }
 const float RAINV=40.0; // veil opacity per block per (g/kg per s) of rain
 float rainVeil(vec3 dir, float dist){
   if(uRainVeil<0.5 || uCloudOn<0.5) return 0.0;
-  float od=0.0, t=110.0;
-  for(int i=0;i<9;i++){
+  // 16 looks spaced 20% apart; the rain fills the air from the ground up to the cloud base and
+  // fades out over the 60 blocks around it (a hard cut there drew the veil as a flat grey sheet)
+  float od=0.0, t=80.0;
+  for(int i=0;i<16;i++){
     if(t>dist) break;
     vec3 p=uCam+dir*t;
-    if(p.y>CY0+CLH*2.0) break;
-    od+=cRain(p.xz,1.5)*min(t*0.35,dist-t)*RAINV;
-    t*=1.35;
+    float hf=1.0-smoothstep(CY0-40.0,CY0+20.0,p.y);
+    if(hf>0.0) od+=cRain(p.xz,clamp(log2(t/64.0),0.0,4.0))*min(t*0.2,dist-t)*RAINV*hf;
+    t*=1.2;
   }
   return 1.0-exp(-od);
 }
@@ -224,10 +257,32 @@ vec3 fogCol(vec3 dir){
   vec3 g=vec3(dot(uHorizon,vec3(0.3,0.5,0.2)));
   return mix(uHorizon,g,0.55)*1.05+uZenith*0.1+uSunCol*0.18*sa;
 }
+// cloud between the camera and a surface point: the sky pass draws the clouds only where the sky
+// shows, so without this a mountain behind a cloud stands in front of it as a flat grey wall.
+// Eight looks along the part of the segment inside the cloud deck, lit roughly (sun through the
+// cloud above, skylight); costs nothing when the segment stays under or over the deck.
+vec4 cloudFront(vec3 wp){
+  if(uCloudOn<0.5) return vec4(0.0);
+  vec3 a=uCam, dv=wp-a;
+  if(max(a.y,wp.y)<CY0 || min(a.y,wp.y)>CTOP) return vec4(0.0);
+  float t0=0.0, t1=1.0;
+  if(abs(dv.y)>1e-3){ float ta=(CY0-a.y)/dv.y, tb=(CTOP-a.y)/dv.y; t0=max(0.0,min(ta,tb)); t1=min(1.0,max(ta,tb)); }
+  if(t1<=t0) return vec4(0.0);
+  float L=length(dv)*(t1-t0), od=0.0, lod=max(0.0,log2(L/8.0/16.0));
+  for(int i=0;i<8;i++) od+=cWaterL(a+dv*mix(t0,t1,(float(i)+0.5)/8.0),lod);
+  float tm=length(dv)*mix(t0,t1,0.5);
+  float al=(1.0-exp(-od*L/8.0*CEXT))*exp(-max(tm-2500.0,0.0)*0.0003);
+  if(al<0.002) return vec4(0.0);
+  vec3 qm=a+dv*mix(t0,t1,0.5);
+  vec3 cc=uSunCol*max(uSunDir.y*1.6,0.9)*mix(1.0,0.3,uNight)*0.45*cloudShade(qm)+uZenith*0.55+uHorizon*0.3;
+  return vec4(cc,al);
+}
 vec3 applyFog(vec3 c, vec3 wp){
   vec3 dv=wp-uCam; float dist=length(dv); vec3 dir=dv/max(dist,1e-4);
   float f=1.0-exp(-pow(dist*uFogDen,2.0));
   c=mix(c, skyCol(dir), clamp(f,0.0,1.0));
+  vec4 cf=cloudFront(wp);
+  if(cf.a>0.0) c=mix(c,cf.rgb,cf.a);
   float rv=rainVeil(dir,dist);
   if(rv>0.0) c=mix(c,veilCol(),rv*0.85);
   // low fog: sea fog rolling in, or fog pooled in the valleys after a clear calm night
@@ -811,7 +866,7 @@ vec3 cLight(vec3 p, float lod, float mu, vec3 sunL, vec3 amb0, int nl){
   float od=0.0, ds=40.0; vec3 lp=p;
   for(int j=0;j<6;j++){
     if(j>=nl) break;
-    lp+=uSunDir*ds; od+=cWater(lp,lod+float(j)*0.5)*ds; ds*=1.8;
+    lp+=uSunDir*ds; od+=cWaterL(lp,lod+float(j)*0.5)*ds; ds*=1.8;
     if(lp.y>CTOP) break;
   }
   od*=CEXT;
@@ -822,18 +877,21 @@ vec3 cLight(vec3 p, float lod, float mu, vec3 sunL, vec3 amb0, int nl){
   }
   sun*=5.0;
   // skylight from above: cloud water over this point hides the sky
-  float up=(cWater(p+vec3(0.0,CLH*0.5,0.0),lod+1.0)+cWater(p+vec3(0.0,CLH*1.5,0.0),lod+1.5))*CLH*CEXT;
+  float up=(cWaterL(p+vec3(0.0,CLH*0.5,0.0),lod+1.0)+cWaterL(p+vec3(0.0,CLH*1.5,0.0),lod+1.5))*CLH*CEXT;
   vec3 amb=amb0*mix(0.25,1.0,exp(-up*0.5));
   vec3 R=sunL*sun+amb;
   if(uFlash.w>0.0) R+=vec3(0.7,0.75,1.0)*uFlash.w*6.0*exp(-length(p.xz-uFlash.xz)/450.0);
   return R;
 }
 vec4 skyClouds(vec3 d){
-  if(uCloudOn<0.5 || d.y<0.0 || uCam.y>=CTOP) return vec4(0.0);
+  if(uCloudOn<0.5 || uCam.y>=CTOP || (uCam.y<=CY0 && d.y<=0.0)) return vec4(0.0);
   // quality: Low/Medium/High/Ultra sets the slices per model layer and the light steps
   int per=uCloudQ<0.5?3:uCloudQ<1.5?4:uCloudQ<2.5?6:8, nl=uCloudQ<0.5?3:uCloudQ<2.5?4:5;
   float sh=CLH/float(per);
-  int i0=int(max(0.0,floor((uCam.y-CY0)/sh)+1.0)), nsl=8*per;
+  // slices at fixed heights from the camera upward, or (looking down) downward to sea level, so a
+  // ray toward the horizon keeps seeing the cloud it passes through below the camera's height
+  bool up=d.y>=0.0;
+  int nsl=8*per, i0=up ? int(max(0.0,floor((uCam.y-CY0)/sh)+1.0)) : int(min(float(nsl),ceil((uCam.y-CY0)/sh)-1.0));
   float mu=dot(d,uSunDir);
   vec3 sunL=uSunCol*max(uSunDir.y*1.6,0.9)*mix(1.0,0.3,uNight);
   vec3 amb0=uZenith*0.55+uHorizon*0.3;
@@ -841,10 +899,10 @@ vec4 skyClouds(vec3 d){
   const float TMAX=14000.0;
   float tprev=0.0;
   for(int i=0;i<64;i++){
-    int si=i0+i;
-    if(si>nsl) break;
+    int si=up ? i0+i : i0-i;
+    if(si>nsl || si<0) break;
     float y1=CY0+float(si)*sh;
-    float t1=d.y>1e-4 ? (y1-uCam.y)/d.y : TMAX;
+    float t1=abs(d.y)>1e-4 ? (y1-uCam.y)/d.y : TMAX;
     t1=min(t1,TMAX);
     float stp=t1-tprev;
     if(stp<=0.0) break;

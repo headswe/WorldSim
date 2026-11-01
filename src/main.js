@@ -27,11 +27,15 @@ const FX_DEFAULTS = { bloom: true, rays: true, ssao: true, dof: true, motion: tr
   cloudQ: matchMedia('(pointer: coarse)').matches ? 1 : 2, ca: true, fxaa: true, look: 0, exposure: 0.95 };
 const LOOKS = ['Cinematic', 'Painted', 'Ink', 'Retro'];
 const ENV_DEFAULTS = { envTemp: 0, envHumid: 1, envClouds: 1, envStorms: 1, envRain: 1, envFog: 1 };
-const settings = { rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, volume: 0.7, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
+// the global weather simulation's own knobs (Weather tab, "Simulation"): what is drawn as cloud and
+// rain, and the physics constants of the model itself
+const SIM_DEFAULTS = { landW: 0.8, oro: 6, convA: 0.7, f0: 0.34, daySw: 8, cthr: 0.12, rain0: 0.019, evap: 0.5, revap: 0.1, auto: 0.15, conv: 40, rad: 420, divD: 2.4, diff: 0.04, seaIce: 1, pol: 84, frH: 0.25, cEvap: 1, cb: 0.1, mem: 0.6, tower: 0.15, speed: 1 };
+const settings = { sim: { ...SIM_DEFAULTS }, rd: 8, leaves: 8000, shadows: true, tod: 15.5, daylen: 20, wind: 1, seed: 1337, season: 2, volume: 0.7, ...ENV_DEFAULTS, fx: { ...FX_DEFAULTS } };
 try {
   const saved = JSON.parse(localStorage.getItem('emberwood.settings') || '{}');
   Object.assign(settings, saved);
   settings.fx = { ...FX_DEFAULTS, ...(saved.fx || {}) };
+  settings.sim = { ...SIM_DEFAULTS, ...(saved.sim || {}) };
   // phone GPUs read the depth buffer too coarsely for screen-space reflections (striped water);
   // switch them off once on touch devices, players can turn them back on
   if (matchMedia('(pointer: coarse)').matches && !saved.ssrPhoneOff) { settings.fx.ssr = false; settings.ssrPhoneOff = true; }
@@ -231,7 +235,10 @@ const weather = createWeather(gl);
 // float render targets; without them (or if it fails to start) the local sim's own scripted
 // large-scale weather is used instead.
 let atmos = null;
-try { if (post.hasFloat && !/cpuwx/.test(location.hash)) { const nx = +((location.hash.match(/wxnx=(\d+)/) || [])[1] || 512); atmos = createAtmosphere(gl, { nx, ny: nx / 2 }); } } catch (e) { console.warn('global weather off:', e); atmos = null; }
+// phones get a quarter of the weather grid (32-block cells) and a gentler spin-up: a full 512 grid
+// stepped ten times a frame can stall a phone GPU long enough for the browser to drop the page
+const PHONE_WX = matchMedia('(pointer: coarse)').matches;
+try { if (post.hasFloat && !/cpuwx/.test(location.hash)) { const nx = +((location.hash.match(/wxnx=(\d+)/) || [])[1] || (PHONE_WX ? 256 : 512)); atmos = createAtmosphere(gl, { nx, ny: nx / 2 }); } } catch (e) { console.warn('global weather off:', e); atmos = null; }
 const atm = { spun: 0, acc: 0, winT: 0, globT: 0, SPIN: +((location.hash.match(/wxspin=(\d+)/) || [])[1] || 1600) };
 // step the global atmosphere in time with the game (one step per quarter second of game time),
 // spin it up from rest over the first frames after the planet arrives, and keep its packed views
@@ -240,12 +247,15 @@ function atmosStep(dt) {
   if (!atmos || !weather.ready) return;
   atmos.tod = settings.tod; atmos.playerX = state.pos[0]; atmos.playerZ = state.pos[2];
   atmos.season = [0, 1, 0, -1][settings.season] || 0; atmos.temp = settings.envTemp; atmos.humid = settings.envHumid; atmos.stormMul = settings.envStorms;
+  const sm = settings.sim;
+  atmos.landW = sm.landW; atmos.convA = sm.convA; atmos.f0 = sm.f0; atmos.daySw = sm.daySw; atmos.oro = sm.oro; atmos.cthr = sm.cthr; atmos.evap = sm.evap; atmos.revap = sm.revap; atmos.auto = sm.auto; atmos.conv = sm.conv; atmos.rad = sm.rad; atmos.divD = sm.divD; atmos.diff = sm.diff; atmos.pol = sm.pol; atmos.frH = sm.frH; atmos.cEvap = sm.cEvap; atmos.cb = sm.cb; atmos.mem = sm.mem; atmos.tower = sm.tower;
+  weather.atmosGain.rain0 = sm.rain0;
   if (atm.spun < atm.SPIN) {
-    const n = Math.min(atm.SPIN - atm.spun, 10);
+    const n = Math.min(atm.SPIN - atm.spun, PHONE_WX ? 3 : 10);
     atmos.run(n); atm.spun += n;
   } else {
-    atm.acc += dt;
-    const n = Math.min(4, Math.floor(atm.acc / 0.25));
+    atm.acc += dt * settings.sim.speed;
+    const n = Math.min(4 * Math.ceil(settings.sim.speed), Math.floor(atm.acc / 0.25));
     if (n > 0) { atmos.run(n); atm.acc -= n * 0.25; }
     if (atm.acc > 1) atm.acc = 0;
   }
@@ -643,7 +653,7 @@ function drawMap() {
     const cc = document.createElement('canvas'); cc.width = W; cc.height = H;
     const im = cc.getContext('2d').createImageData(W, H);
     for (let n = 0; n < W * H; n++) {
-      const c = Math.min(1, Math.max(0, (B[n * 4 + 1] - 0.06) / 0.5)), r = Math.min(1, C[n * 4] * 12);
+      const c = Math.min(1, Math.max(0, (B[n * 4 + 1] - 0.04) / 0.42)), r = Math.min(1, Math.max(0, C[n * 4] - 0.019) * 25);
       im.data[n * 4] = 245 - r * 120; im.data[n * 4 + 1] = 248 - r * 70; im.data[n * 4 + 2] = 255;
       im.data[n * 4 + 3] = Math.max(c * c * (3 - 2 * c) * 200, r * 160);
     }
@@ -1447,7 +1457,7 @@ function setCommon(pr, eye, time) {
   setU(pr, 'uCaustics', settings.fx.caustics ? 1 : 0);
   setU(pr, 'uSeason', seasonVis);
   // the clouds: the global atmosphere's cloud volume over the whole planet, or the local sim's window
-  setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0);
+  setU(pr, 'uCloudOn', cloudsOn() ? 1 : 0); setU(pr, 'uCThr', settings.sim.cthr); setU(pr, 'uRain0', settings.sim.rain0);
   setI(pr, 'uCV0', 6); setI(pr, 'uCV1', 8); setI(pr, 'uCV2', 10);
   if (weather.atmos) { setU(pr, 'uCVO', [0, 0]); setU(pr, 'uCVN', [512, 256]); setU(pr, 'uCVWrap', 1); }
   else { setU(pr, 'uCVO', weather.cloudVolO); setU(pr, 'uCVN', [CLOUD_N, CLOUD_N]); setU(pr, 'uCVWrap', 0); }
@@ -1781,6 +1791,40 @@ bindRange('envFog', 'envFog', v => v === 0 ? 'crystal clear' : times(v, 'clearer
 const ENV_IDS = ['envTemp', 'envHumid', 'envClouds', 'envStorms', 'envRain', 'envFog', 'wind'];
 function syncEnvUI() { for (const id of ENV_IDS) { const el = $(id); el.value = settings[id]; el.dispatchEvent(new Event('input')); } }
 $('env-reset').addEventListener('click', () => { Object.assign(settings, ENV_DEFAULTS, { wind: 1 }); syncEnvUI(); });
+// simulation knobs: each slider writes settings.sim[key]; atmosStep hands them to the model every frame
+const SIM_UI = [
+  ['sim-landW', 'landW', v => v === 0 ? 'latitude bands only' : `${Math.round(v * 100)}% from the ground below`],
+  ['sim-oro', 'oro', v => v === 0 ? 'off' : `${v}×`],
+  ['sim-f0', 'f0', v => v < 0.3 ? `${v.toFixed(2)} · fewer, bigger systems` : v > 0.38 ? `${v.toFixed(2)} · more, smaller systems` : v.toFixed(2)],
+  ['sim-daySw', 'daySw', v => `±${v} °C`],
+  ['sim-convA', 'convA', v => v === 0 ? 'cell by cell' : `${Math.round(v * 100)}% shared`],
+  ['sim-mem', 'mem', v => v === 0 ? 'off' : `+${v.toFixed(1)} °C where storms ran`],
+  ['sim-cb', 'cb', v => v <= 0 ? `${v.toFixed(1)} °C · strong lid` : `+${v.toFixed(1)} °C`],
+  ['sim-tower', 'tower', v => v === 0 ? 'anvil only' : `${Math.round(v * 100)}% stays as cloud`],
+  ['sim-cEvap', 'cEvap', v => `${Math.round(v * 100)}% per step`],
+  ['sim-seaIce', 'seaIce', v => v ? 'cold, dry ice (restart to apply)' : 'open water at -1.8 °C (restart to apply)'],
+  ['sim-frH', 'frH', v => v === 0 ? 'roughness only' : `${Math.round(v * 100)}%`],
+  ['sim-pol', 'pol', v => `from ${v}°`],
+  ['sim-cthr', 'cthr', v => `${v.toFixed(2)} g/kg`],
+  ['sim-rain0', 'rain0', v => v.toFixed(3)],
+  ['sim-evap', 'evap', v => `${v.toFixed(2)}×`],
+  ['sim-revap', 'revap', v => v === 0 ? 'off' : v.toFixed(2)],
+  ['sim-auto', 'auto', v => `from ${v.toFixed(2)} g/kg`],
+  ['sim-conv', 'conv', v => `${v} s`],
+  ['sim-rad', 'rad', v => `${v} s`],
+  ['sim-divD', 'divD', v => v.toFixed(1)],
+  ['sim-diff', 'diff', v => v.toFixed(3)],
+  ['sim-speed', 'speed', v => `${v}×`],
+];
+function syncSimUI() {
+  for (const [id, key, fmt] of SIM_UI) { const el = $(id); el.value = settings.sim[key]; $(id + '-v').textContent = fmt(settings.sim[key]); }
+}
+for (const [id, key, fmt] of SIM_UI) {
+  $(id).addEventListener('input', () => { settings.sim[key] = Number($(id).value); $(id + '-v').textContent = fmt(settings.sim[key]); saveSettings(); });
+}
+syncSimUI();
+$('sim-reset').addEventListener('click', () => { settings.sim = { ...SIM_DEFAULTS }; syncSimUI(); saveSettings(); });
+$('sim-restart').addEventListener('click', () => { if (atmos && planet) { atmos.seaIce = settings.sim.seaIce; atmos.reset(planet); atm.spun = 0; } });
 const shadowsEl = $('shadows');
 shadowsEl.checked = settings.shadows;
 shadowsEl.addEventListener('change', () => { settings.shadows = shadowsEl.checked; saveSettings(); });
@@ -2079,7 +2123,7 @@ function frameBody(now) {
   simStep(dt);
   if (planet && !weather.ready && state.spawned) {
     weather.reset(planet, settings.seed, state.pos[0], state.pos[2], settings.season);
-    if (atmos) { try { atmos.reset(planet); atm.spun = 0; } catch (e) { console.warn('global weather off:', e); atmos = null; } }
+    if (atmos) { try { atmos.seaIce = settings.sim.seaIce; atmos.reset(planet); atm.spun = 0; } catch (e) { console.warn('global weather off:', e); atmos = null; } }
     weather.atmos = null;
   }
   atmosStep(dt);

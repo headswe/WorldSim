@@ -1,6 +1,8 @@
 // Inlines src/ into one self-contained page: emberwood.html (artifact body) and index.html (standalone).
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
-const dir = new URL('.', import.meta.url).pathname;
+import { fileURLToPath } from 'node:url';
+// fileURLToPath, not .pathname, so the path also works on Windows (no leading slash before C:)
+const dir = fileURLToPath(new URL('.', import.meta.url));
 const r = f => readFileSync(dir + f, 'utf8');
 // sound effects in sfx/ (name.mp3, .ogg or .wav) are inlined so the page stays one file
 const MIME = { mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4' };
