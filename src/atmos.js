@@ -163,7 +163,7 @@ float pres(int i,int j,int k){
   // Pass 1: dynamics. Advect (u, v, theta, q) and cloud, add pressure force, Coriolis, friction,
   // radiation, surface heat and evaporation, a little diffusion.
   const FS_DYN = COMMON + FRAG_IJK + SAMPLE + `
-uniform float uRad, uDiff, uDivD, uEvap;
+uniform float uRad, uDiff, uDivD, uEvap, uPol, uFrH;
 void main(){
   int i,j,k; ijk(i,j,k);
   vec4 s=S1(i,j,k), c2=S2(i,j,k);
@@ -175,7 +175,7 @@ void main(){
   // a little diffusion (keeps the grid-scale noise down)
   vec4 nb=0.25*(S1(i+1,j,k)+S1(i-1,j,k)+S1(i,j+1,k)+S1(i,j-1,k));
   vec4 nb2=0.25*(S2(i+1,j,k)+S2(i-1,j,k)+S2(i,j+1,k)+S2(i,j-1,k));
-  float dif=uDiff*(1.0+4.0*smoothstep(75.0,88.0,abs(latOf(j))));
+  float dif=uDiff*(1.0+4.0*smoothstep(uPol-3.0,88.0,abs(latOf(j))));
   a+=(nb-s)*dif; a2.r+=(nb2.r-c2.r)*dif;
   // pressure force
   // the warm/cold-air part comes from the diagnostics; the surface part from the current surface
@@ -192,9 +192,12 @@ void main(){
   float an=corio(j)*DT, ca=cos(an), sa=sin(an);
   v=vec2(v.x*ca-v.y*sa, v.x*sa+v.y*ca);
   vec4 g=GEO(i,j), g2=GEO2(i,j);
-  // friction: the ground slows the lowest layer (more over rough, high land), a sponge at the top
-  float pol=smoothstep(78.0,88.0,abs(latOf(j)));
-  float fr=pol*0.3+(k==0 ? (g.g>0.5 ? 0.03 : 0.06+0.0012*g.r+0.05*g2.b) : k==1 ? 0.012 : k==K-1 ? 0.01 : 0.0015);
+  // friction: the ground slows the lowest layer (more over rough land; uFrH of the old extra drag
+  // for sheer height, which made flat high ice caps 5-10x stickier than the sea and parked the lows
+  // there), a sponge at the top, and a damping ring round the poles from uPol degrees, where the
+  // grid's cells get thin
+  float pol=smoothstep(uPol,88.0,abs(latOf(j)));
+  float fr=pol*0.3+(k==0 ? (g.g>0.5 ? 0.03 : 0.06+0.0012*uFrH*g.r+0.05*g2.b) : k==1 ? 0.012 : k==K-1 ? 0.01 : 0.0015);
   v/=1.0+DT*fr;
   if(j==0||j==NY-1) v.y=0.0;
   float th=a.z, q=max(a.w,0.0);
@@ -216,7 +219,7 @@ void main(){
     q+=max(0.0,qs*min(1.0,wet*1.2)-q)*E*DT;
   }
   o0=vec4(v,th,q);
-  o1=vec4(max(a2.r,0.0),0.0,c2.b,a2.a*0.98);
+  o1=vec4(max(a2.r,0.0),0.0,c2.b,a2.a*0.99);
 }`;
 
   // Diagnostics after the dynamics: the pressure in each layer and how fast the air there spreads
@@ -235,7 +238,7 @@ void main(){
   // back into the layers and works out the vertical velocity. Done in two halves because WebGL 2
   // only promises four render targets.
   const FS_COL = COMMON + `
-uniform float uConvT, uRevap, uAuto, uConvA; uniform int uHalf;
+uniform float uConvT, uRevap, uAuto, uConvA, uCEvap, uCB, uMem, uTower; uniform int uHalf;
 layout(location=0) out vec4 o0; layout(location=1) out vec4 o1; layout(location=2) out vec4 o2; layout(location=3) out vec4 o3;
 float gamOf(float T,float qs){ return LC*qs*17.27*237.3/((T+237.3)*(T+237.3)); }
 void main(){
@@ -247,14 +250,18 @@ void main(){
     float T=tAir(m,th[m]), qs=qsat(T,m);
     float d=(q[m]-qs)/(1.0+gamOf(T,qs));
     if(d>0.0){ q[m]-=d; c[m]+=d; th[m]+=LC*d; }
-    else { float e=min(c[m],-d*0.5); c[m]-=e; q[m]+=e; th[m]-=LC*e; }
+    else { float e=min(c[m],-d*uCEvap); c[m]-=e; q[m]+=e; th[m]-=LC*e; }
   }
   // moist convection: a parcel from the lowest layer rises as long as it is warmer than the
   // saturated air around it (its equivalent potential temperature beats theirs)
   // the parcel comes from the low air of this column and its neighbours together (uConvA of the way
   // toward their mean), so storms start over patches of warm moist air, not cell by cell
   float nbe=0.0; for(int dj=-1;dj<=1;dj++) for(int di=-1;di<=1;di++){ vec4 s0=S1(i+di,j+dj,0); nbe+=s0.z+LC*max(s0.w,0.0); }
-  float the=mix(th[0]+LC*q[0],nbe/9.0,uConvA)+${(opts.cbonus ?? 0.3).toFixed(2)}+0.8*(uStorm-1.0);
+  // uCB: how much warmer than the air above a parcel must be to set off a storm (lower means a
+  // lid holds it back until the air is really unstable); uMem: storms that ran here recently
+  // (memory that drifts with the wind and fades over a few hundred steps) start more easily, so
+  // they keep going as organised systems instead of flickering cell by cell
+  float the=mix(th[0]+LC*q[0],nbe/9.0,uConvA)+uCB+uMem*S2(i,j,0).a+0.8*(uStorm-1.0);
   int top=0;
   for(int m=1;m<K;m++){ float thes=th[m]+LC*qsat(tAir(m,th[m]),m); if(the>thes) top=m; else break; }
   float conv=0.0, rainC=0.0;
@@ -273,9 +280,11 @@ void main(){
     for(int m=1;m<K;m++) th[m]+=dh[m]*fpay;
     heat*=fpay;
     q[0]-=heat/LC;
-    // an anvil of cloud spreads at the top, the rest rains out
-    for(int m=1;m<K;m++){ if(m==top) c[m]+=heat/LC*0.25; if(m==top-1) c[m]+=heat/LC*0.1; }
-    rainC=heat/LC*0.65;
+    // an anvil of cloud spreads at the top, uTower stays as cloud in the rising tower below it
+    // (more of it higher up), the rest rains out
+    float tw=0.0; for(int m=1;m<K;m++) if(m<top) tw+=float(m);
+    for(int m=1;m<K;m++){ if(m==top) c[m]+=heat/LC*0.25; if(m==top-1) c[m]+=heat/LC*0.1; if(m<top && tw>0.0) c[m]+=heat/LC*uTower*float(m)/tw; }
+    rainC=heat/LC*max(0.0,0.65-uTower);
     // the rain-cooled downdraft: a pool of cold air at the foot of the storm
     th[0]-=heat*0.15;
     conv=heat/DT;
@@ -333,7 +342,8 @@ void main(){
   // forward-backward and the fast gravity waves stay stable)
   th-=clamp(0.5*(wtop+wbot),-2.0,2.0)*SREF*DT;
   o0=vec4(S1(i,j,k).xy,th,max(q,0.0));
-  o1=vec4(max(cl,0.0),k==0 ? x.x : (k==1 ? x.y : 0.0),clamp(wtop,-2.0,2.0),float(k)==x.z ? 1.0 : 0.0);
+  // a: storm memory, kept in the lowest layer: 1 where a storm runs now, fading as it drifts away
+  o1=vec4(max(cl,0.0),k==0 ? x.x : (k==1 ? x.y : 0.0),clamp(wtop,-2.0,2.0),k==0 ? max(S2(i,j,0).a,x.z>=2.0 ? 1.0 : 0.0) : 0.0);
 }`;
 
   // Pass 3: surface. Pressure from the column's net convergence, rain and soil moisture.
@@ -439,6 +449,7 @@ void main(){
     NX, NY, K, ok: true,
     tod: 12, playerX: 0, playerZ: 0, season: 0, temp: 0, humid: 1, stormMul: 1,
     rad: 420, conv: 40, diff: 0.04, divD: 2.4, evap: 0.5, revap: 0.1, auto: 0.15, cthr: 0.12, landW: 0.8, oro: 6, convA: 0.7, f0: opts.f0 || 0.34, daySw: 8,
+    pol: 84, frH: 0.25, cEvap: 1, cb: 0.1, mem: 0.6, tower: 0.15,
     steps: 0, passMask: 15,
     win, glob, cloudTex,
   };
@@ -450,7 +461,7 @@ void main(){
     const f = (n, v) => { if (p.u[n] !== undefined) gl.uniform1f(p.u[n], v); };
     f('uTod', api.tod); f('uPlayerX', api.playerX / 16 * SC); f('uPlayerN', api.playerZ / 16 < PHc / 2 ? 1 : -1);
     f('uSeason', api.season); f('uTempOff', api.temp); f('uHumid', api.humid); f('uStorm', api.stormMul);
-    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro); f('uConvA', api.convA); f('uF0', api.f0); f('uDaySw', api.daySw);
+    f('uRad', api.rad); f('uDivD', api.divD); f('uConvT', api.conv); f('uDiff', api.diff); f('uEvap', api.evap); f('uRevap', api.revap); f('uAuto', api.auto); f('uCThr', api.cthr); f('uLandW', api.landW); f('uOro', api.oro); f('uConvA', api.convA); f('uF0', api.f0); f('uDaySw', api.daySw); f('uPol', api.pol); f('uFrH', api.frH); f('uCEvap', api.cEvap); f('uCB', api.cb); f('uMem', api.mem); f('uTower', api.tower);
   }
   // save and restore the GL state this module touches, so the renderer is never disturbed
   function withGL(fn) {

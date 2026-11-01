@@ -198,14 +198,15 @@ float cWaterQ(vec3 p, float lod, bool fine){
   vec4 a,b;
   if(fine && lod<2.5){ a=cvBsp(uCV0,uv,lod); b=cvBsp(uCV1,uv,lod); }
   else { a=textureLod(uCV0,uv,lod); b=textureLod(uCV1,uv,lod); }
-  a=max(a-CTHR,0.0); b=max(b-CTHR,0.0);
   float L[10]=float[10](a.x,a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w,b.w);
   float zc=clamp(z,0.0,7.0); int k=int(min(floor(zc),6.0)); float f=zc-float(k), f2=f*f, f3=f2*f;
   // L[k+1] is layer k: the four layers around z
   float w=L[k]*(1.0-3.0*f+3.0*f2-f3)/6.0+L[k+1]*(4.0-6.0*f2+3.0*f3)/6.0+L[k+2]*(1.0+3.0*f+3.0*f2-3.0*f3)/6.0+L[k+3]*f3/6.0;
   if(z<0.0) w*=(z+0.5)*2.0; // ramps from 0 at CY0 to the layer's value at its middle
   if(z>7.0) w*=1.0-(z-7.0)*2.0;
-  return max(w,0.0)*cvEdge(uv);
+  // the cut comes after the spline joins the layers, so one cloud spread over several layers
+  // draws as one body instead of a stack of sheets with gaps between them
+  return max(w-CTHR,0.0)*cvEdge(uv);
 }
 // the cloud body as drawn, and a cheaper bilinear read for light and shadow (blurred anyway)
 float cWater(vec3 p, float lod){ return cWaterQ(p,lod,true); }
