@@ -532,6 +532,7 @@ void main(){
 
   // ---- set up from the planet ----
   api.reset = function (pl) {
+    lastPl = pl;
     const g = new Float32Array(NX * NY * 4), g2 = new Float32Array(NX * NY * 4);
     const s1 = new Float32Array(AW * AH * 4), s2 = new Float32Array(AW * AH * 4), sf = new Float32Array(NX * NY * 4);
     let seed = 12345;
@@ -598,7 +599,20 @@ void main(){
       if (wantGlobal && !glob.fence) pack(glob, 0, 0, PWc / CG[0], PHc / CG[1]);
     });
   };
-  api.collect = function (wait) { const a = collect(win, wait), b = collect(glob, wait); if (b) findLows(); return a || b; };
+  // if a setting pushed the model past what it can hold (numbers turn to NaN), start it over
+  // from rest rather than leaving a dead sky; api.blowUps counts how often that happened
+  let lastPl = null;
+  api.blowUps = 0;
+  api.collect = function (wait) {
+    const a = collect(win, wait), b = collect(glob, wait);
+    if (b) {
+      const d = glob.data[2]; let bad = false;
+      for (let n = 0; n < d.length; n += 997) if (!Number.isFinite(d[n])) { bad = true; break; }
+      if (bad && lastPl) { api.blowUps++; console.warn('weather blew up; restarting it'); api.reset(lastPl); return a || b; }
+      findLows();
+    }
+    return a || b;
+  };
   // The lows: places on the coarse globe where the surface pressure is lowest around and well
   // below its surroundings. These are the storms and depressions the sim grew; the game uses them
   // for the map, for swell and for the storm list. Positions in planet cells, depth in hPa.
